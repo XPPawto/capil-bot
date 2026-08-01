@@ -20,5 +20,17 @@ services:
     depends_on:
       - db
 
+  phpmyadmin:
+    image: phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: db
+      PMA_USER: kelurahan
+      PMA_PASSWORD: kelurahan
+    ports:
+      - "8092:80"
+    depends_on:
+      - db
+
 volumes:
   db_data:

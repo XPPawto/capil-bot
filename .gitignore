@@ -1,0 +1,26 @@
+node_modules/
+dist/
+build/
+.next/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# Baileys WA session (sensitive - equals account takeover if leaked)
+apps/bot/.baileys_auth/
+
+# uploaded resident documents + temp files (sensitive personal data)
+storage/uploads/
+storage/tmp/
+!storage/uploads/.gitkeep
+!storage/tmp/.gitkeep
+
+# Prisma
+packages/db/generated/
+
+# misc
+.DS_Store
+npm-debug.log*

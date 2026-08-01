@@ -1,0 +1,24 @@
+{
+  "name": "bot-kelurahan",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n bot,web -c blue,green \"npm run dev -w apps/bot\" \"npm run dev -w apps/web\"",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "db:generate": "npm run generate -w packages/db",
+    "db:migrate": "npm run migrate -w packages/db",
+    "db:seed": "npm run seed -w packages/db",
+    "build": "npm run build -w packages/db && npm run build -w apps/bot && npm run build -w apps/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "dotenv-cli": "^7.4.4",
+    "pm2": "^7.0.3",
+    "typescript": "^5.6.3"
+  }
+}

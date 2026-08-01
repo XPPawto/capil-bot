@@ -1,0 +1,169 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum ServiceType {
+  KARTU_KELUARGA
+  AKTE_KEMATIAN
+  AKTE_KELAHIRAN
+}
+
+enum RequestStatus {
+  DICEK
+  DIPROSES
+  DITOLAK
+  SELESAI
+}
+
+/// Akun petugas/admin dashboard.
+model Admin {
+  id               Int             @id @default(autoincrement())
+  username         String          @unique
+  passwordHash     String
+  name             String
+  failedLoginCount Int             @default(0)
+  lockedUntil      DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  sessions         Session[]
+  statusHistories  StatusHistory[]
+}
+
+/// Sesi login dashboard, disimpan di DB (bukan JWT) supaya logout = revoke langsung.
+model Session {
+  id        String   @id @default(cuid())
+  adminId   Int
+  admin     Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([adminId])
+}
+
+/// Singleton (id selalu 1) yang merefleksikan status koneksi nomor WA bot untuk dashboard.
+model BotSession {
+  id              Int       @id @default(1)
+  waJid           String?
+  phoneNumber     String?
+  connected       Boolean   @default(false)
+  lastConnectedAt DateTime?
+  updatedAt       DateTime  @updatedAt
+}
+
+/// State mesin percakapan per nomor WA, selama warga masih mengisi formulir/upload syarat.
+/// Sengaja terpisah dari model Request supaya antrian admin cuma berisi pengajuan yang sudah lengkap.
+model ConversationState {
+  id                  Int      @id @default(autoincrement())
+  waJid               String   @unique
+  state               String
+  requirementsSnapshot Json?
+  contextJson         Json?
+  expiresAt           DateTime
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
+/// Daftar syarat dokumen per layanan, bisa diedit admin lewat dashboard.
+model RequirementTemplate {
+  id          Int         @id @default(autoincrement())
+  serviceType ServiceType
+  name        String
+  description String?
+  order       Int
+  active      Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([serviceType])
+}
+
+/// Pengajuan warga yang sudah lengkap syaratnya (dibuat setelah semua dokumen terupload).
+model Request {
+  id                String        @id @default(cuid())
+  /// Nomor tiket yang mudah dibacakan warga ke petugas, format KODE-YYMM-0001.
+  ticketNumber      String        @unique
+  serviceType       ServiceType
+  applicantName     String
+  waJid             String
+  waNumber          String
+  status            RequestStatus @default(DICEK)
+  rejectionReason   String?
+  pickupToken       String        @unique
+  pickupTokenUsedAt DateTime?
+  qrGeneratedAt     DateTime?
+  pickupConfirmedAt DateTime?
+  completedAt       DateTime?
+  notifiedStatus    RequestStatus?
+  notifiedAt        DateTime?
+  /// Diisi saat admin menekan "Kirim Notifikasi Siap Diambil" (bisa ditekan ulang untuk resend).
+  readyForPickupRequestedAt DateTime?
+  /// Diisi bot setelah pesan siap-diambil (berisi QR) benar-benar terkirim.
+  readyForPickupSentAt      DateTime?
+  /// Diisi sekali saat reminder otomatis "belum diambil" terkirim, supaya warga tidak di-spam berkali-kali.
+  pickupReminderSentAt      DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  documents       RequestDocument[]
+  statusHistories StatusHistory[]
+
+  @@index([waJid])
+  @@index([status])
+}
+
+/// Penghitung nomor urut tiket per layanan+bulan, di-increment atomik lewat raw SQL
+/// (INSERT ... ON DUPLICATE KEY UPDATE ... LAST_INSERT_ID) supaya aman dari race condition
+/// saat dua pengajuan pada layanan & bulan yang sama selesai hampir bersamaan.
+model TicketSequence {
+  id          Int         @id @default(autoincrement())
+  serviceType ServiceType
+  yearMonth   String
+  lastNumber  Int         @default(0)
+
+  @@unique([serviceType, yearMonth])
+}
+
+/// Nomor WA petugas yang dikabari otomatis tiap ada pengajuan baru masuk (status DICEK).
+model StaffContact {
+  id        Int      @id @default(autoincrement())
+  waNumber  String
+  label     String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+/// Berkas syarat (foto/PDF) yang sudah dipindah ke penyimpanan permanen untuk sebuah Request.
+model RequestDocument {
+  id              Int      @id @default(autoincrement())
+  requestId       String
+  request         Request  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requirementName String
+  fileName        String
+  filePath        String
+  mimeType        String
+  uploadedAt      DateTime @default(now())
+
+  @@index([requestId])
+}
+
+/// Jejak audit perubahan status tiap Request.
+model StatusHistory {
+  id          Int           @id @default(autoincrement())
+  requestId   String
+  request     Request       @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  status      RequestStatus
+  note        String?
+  changedById Int?
+  changedBy   Admin?        @relation(fields: [changedById], references: [id])
+  changedAt   DateTime      @default(now())
+
+  @@index([requestId])
+}

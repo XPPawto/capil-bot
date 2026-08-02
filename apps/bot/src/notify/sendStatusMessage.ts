@@ -5,6 +5,7 @@ import { serviceLabel } from "../conversation/menu";
 import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
 import { humanSendMessage } from "../wa/humanSend";
+import { estimateProcessingMinutes, formatEstimatedWait } from "./estimateWaitTime";
 
 const pickupTokenAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 10);
 
@@ -33,11 +34,21 @@ export async function sendStatusMessage(requestId: string): Promise<void> {
       data: { pickupToken, pickupTokenUsedAt: null, qrGeneratedAt: new Date() },
     });
     const qrBuffer = await QRCode.toBuffer(pickupToken, { margin: 1, width: 400 });
+
+    const estimateMinutes = await estimateProcessingMinutes(req.serviceType).catch(() => null);
+    const estimateText =
+      estimateMinutes !== null
+        ? `\n\nEstimasi: berdasarkan riwayat pengajuan lain, dokumen Anda biasanya siap dalam sekitar *${formatEstimatedWait(
+            estimateMinutes
+          )}* (bisa lebih cepat/lambat tergantung antrian saat ini).`
+        : "";
+
     await humanSendMessage(sock, req.waJid, {
       image: qrBuffer,
       caption:
         `Pengajuan *${label}* Anda (No. Tiket: *${req.ticketNumber}*) sedang *diproses*.\n\n` +
-        `Simpan QR ini - nanti akan kami kabari lagi begitu dokumennya sudah siap diambil di kantor kelurahan.`,
+        `Simpan QR ini - nanti akan kami kabari lagi begitu dokumennya sudah siap diambil di kantor kelurahan.` +
+        estimateText,
     });
   } else if (req.status === "DITOLAK") {
     await humanSendMessage(sock, req.waJid, {

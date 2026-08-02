@@ -7,6 +7,7 @@ import { MessageThread } from "./MessageThread";
 import { DocumentGallery } from "./DocumentGallery";
 import { AutoRefresh } from "./AutoRefresh";
 import { TakeoverToggle } from "./TakeoverToggle";
+import { SendFileForm } from "./SendFileForm";
 
 export default async function RequestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -74,6 +75,8 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
           readyForPickupSentAt={request.readyForPickupSentAt?.toISOString() ?? null}
         />
       </section>
+
+      <SendFileForm requestId={request.id} />
 
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-medium text-ink">Percakapan dengan Warga</h2>

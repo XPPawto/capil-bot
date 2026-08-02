@@ -10,6 +10,7 @@ import qrcodeTerminal from "qrcode-terminal";
 import { config } from "../config";
 import { logger } from "../logger";
 import { handleIncomingMessages } from "../conversation/messageHandler";
+import { handleIncomingCalls } from "../conversation/callHandler";
 import { getBackoffDelay, getDisconnectStatusCode, markBotConnected, markBotDisconnected } from "./connection";
 import { waState } from "./state";
 
@@ -116,6 +117,10 @@ export async function startSocket(mode: ConnectMode = { type: "qr" }): Promise<v
       handleIncomingMessages(sock, payload).catch((err) =>
         logger.error({ err }, "Gagal memproses pesan masuk")
       );
+    });
+
+    sock.ev.on("call", (events) => {
+      handleIncomingCalls(sock, events).catch((err) => logger.error({ err }, "Gagal memproses panggilan masuk"));
     });
   } catch (err) {
     waState.isConnecting = false;

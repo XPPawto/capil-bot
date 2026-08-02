@@ -105,6 +105,32 @@ export async function notifyTakeover(waJid: string, active: boolean): Promise<bo
   }
 }
 
+/**
+ * Kirim soft file (dokumen digital final - mis. scan KK/Akte) ke warga lewat WA. Body
+ * base64 bisa cukup besar (sampai ~13-14MB untuk berkas 10MB) - bukan best-effort diam-diam
+ * seperti notifikasi status, kegagalan harus dikembalikan ke admin supaya tahu harus ulang.
+ */
+export async function sendFileToResident(
+  requestId: string,
+  fileName: string,
+  mimeType: string,
+  fileBase64: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await callControlServer("/notify/send-file", {
+      method: "POST",
+      body: JSON.stringify({ requestId, fileName, mimeType, fileBase64 }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { ok: false, error: data.error ?? "failed" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "bot_unreachable" };
+  }
+}
+
 /** Mengembalikan alasan gagal (kalau ada) supaya bisa ditampilkan ke admin. */
 export async function startBroadcast(message: string): Promise<{ ok: boolean; error?: string }> {
   try {

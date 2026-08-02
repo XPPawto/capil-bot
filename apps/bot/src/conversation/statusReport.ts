@@ -1,6 +1,7 @@
-import { prisma } from "@kelurahan/db";
+import { prisma, ServiceType } from "@kelurahan/db";
 import { serviceLabel } from "./menu";
 import { STATUS_LABEL } from "./statusLabel";
+import { estimateProcessingMinutes, formatEstimatedWait } from "../notify/estimateWaitTime";
 
 /**
  * Dipicu warga lewat command global "status" - tidak menyentuh ConversationState
@@ -12,11 +13,27 @@ export async function buildStatusReport(waJid: string): Promise<string> {
     where: { waJid },
     orderBy: { createdAt: "desc" },
     take: 5,
+    include: {
+      statusHistories: { where: { status: "DIPROSES" }, orderBy: { changedAt: "desc" }, take: 1 },
+    },
   });
 
   if (requests.length === 0) {
     return "Anda belum memiliki pengajuan tercatat. Ketik *menu* untuk memulai pengajuan.";
   }
+
+  // Prefetch estimasi per layanan sekali saja (bukan per baris) - request yang masih
+  // diproses & belum siap diambil kemungkinan berbeda-beda layanannya.
+  const pendingServiceTypes = [
+    ...new Set(
+      requests.filter((r) => r.status === "DIPROSES" && !r.readyForPickupSentAt).map((r) => r.serviceType)
+    ),
+  ];
+  const estimateByService = new Map<ServiceType, number | null>(
+    await Promise.all(
+      pendingServiceTypes.map(async (s): Promise<[ServiceType, number | null]> => [s, await estimateProcessingMinutes(s)])
+    )
+  );
 
   const lines = requests.map((r, idx) => {
     const parts = [
@@ -27,11 +44,21 @@ export async function buildStatusReport(waJid: string): Promise<string> {
       parts.push(`   Alasan: ${r.rejectionReason}`);
     }
     if (r.status === "DIPROSES") {
-      parts.push(
-        r.readyForPickupSentAt
-          ? "   Sudah *siap diambil* di kantor kelurahan."
-          : "   Masih diproses, belum siap diambil."
-      );
+      if (r.readyForPickupSentAt) {
+        parts.push("   Sudah *siap diambil* di kantor kelurahan.");
+      } else {
+        const diprosesAt = r.statusHistories[0]?.changedAt;
+        const avgMinutes = estimateByService.get(r.serviceType) ?? null;
+        const remaining =
+          diprosesAt && avgMinutes !== null
+            ? avgMinutes - Math.floor((Date.now() - diprosesAt.getTime()) / 60_000)
+            : null;
+        parts.push(
+          remaining !== null && remaining > 5
+            ? `   Masih diproses, estimasi sekitar *${formatEstimatedWait(remaining)}* lagi.`
+            : "   Masih diproses, belum siap diambil."
+        );
+      }
     }
     return parts.join("\n");
   });

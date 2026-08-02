@@ -7,6 +7,7 @@ import { sendStatusMessage } from "../notify/sendStatusMessage";
 import { sendReadyForPickupMessage } from "../notify/sendReadyForPickup";
 import { sendCustomMessage } from "../notify/sendCustomMessage";
 import { sendTakeoverNotice } from "../notify/sendTakeoverNotice";
+import { sendFileToResident } from "../notify/sendFileToResident";
 import { runBroadcast } from "../notify/broadcast";
 import { logoutSocket, startSocket } from "../wa/socket";
 import { waState } from "../wa/state";
@@ -27,6 +28,9 @@ export function startControlServer(): void {
   // menyusun ulang JSON.stringify(req.body) di sini berisiko beda urutan/whitespace.
   app.use(
     express.json({
+      // 16mb: cukup untuk file base64 (berkas 10MB -> ~13.4MB base64) + overhead JSON,
+      // dipakai endpoint /notify/send-file untuk soft file yang dikirim admin ke warga.
+      limit: "16mb",
       verify: (req, _res, buf) => {
         (req as RequestWithRawBody).rawBody = buf.toString("utf8");
       },
@@ -151,6 +155,24 @@ export function startControlServer(): void {
       res.json({ ok: true });
     } catch (err) {
       logger.error({ err, waJid, active }, "Gagal mengirim notifikasi ambil-alih percakapan");
+      res.status(502).json({ error: "send_failed" });
+    }
+  });
+
+  app.post("/notify/send-file", async (req, res) => {
+    const requestId = String(req.body?.requestId ?? "");
+    const fileName = String(req.body?.fileName ?? "dokumen");
+    const mimeType = String(req.body?.mimeType ?? "application/octet-stream");
+    const fileBase64 = String(req.body?.fileBase64 ?? "");
+    if (!requestId || !fileBase64) {
+      res.status(400).json({ error: "missing_fields" });
+      return;
+    }
+    try {
+      await sendFileToResident(requestId, fileName, mimeType, fileBase64);
+      res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err, requestId, fileName }, "Gagal mengirim file dokumen ke warga");
       res.status(502).json({ error: "send_failed" });
     }
   });

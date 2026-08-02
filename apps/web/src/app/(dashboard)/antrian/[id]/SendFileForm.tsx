@@ -18,16 +18,20 @@ export function SendFileForm({ requestId }: { requestId: string }) {
     const form = new FormData();
     form.append("file", file);
 
-    const res = await fetch(`/api/requests/${requestId}/send-file`, { method: "POST", body: form });
-    setSending(false);
-
-    if (!res.ok) {
-      setError("Gagal mengirim dokumen (pastikan bot terhubung dan format file JPG/PNG/PDF, maks 10MB).");
-      return;
+    try {
+      const res = await fetch(`/api/requests/${requestId}/send-file`, { method: "POST", body: form });
+      if (!res.ok) {
+        setError("Gagal mengirim dokumen (pastikan bot terhubung dan format file JPG/PNG/PDF, maks 10MB).");
+        return;
+      }
+      setSuccess(`Dokumen "${file.name}" terkirim ke warga lewat WhatsApp.`);
+      setFile(null);
+      if (inputRef.current) inputRef.current.value = "";
+    } catch {
+      setError("Gagal mengirim dokumen: koneksi ke server terputus. Periksa koneksi internet Anda dan coba lagi.");
+    } finally {
+      setSending(false);
     }
-    setSuccess(`Dokumen "${file.name}" terkirim ke warga lewat WhatsApp.`);
-    setFile(null);
-    if (inputRef.current) inputRef.current.value = "";
   }
 
   return (

@@ -1,6 +1,6 @@
 import type { ServiceType } from "@kelurahan/db";
 
-export type ConversationStep = "IDLE" | "AWAIT_NAME" | "COLLECTING_DOCS";
+export type ConversationStep = "IDLE" | "AWAIT_NAME" | "COLLECTING_DOCS" | "FIXING_REJECTED";
 
 export interface RequirementSnapshotItem {
   id: number;
@@ -23,6 +23,9 @@ export interface ConversationContext {
   serviceType?: ServiceType;
   applicantName?: string;
   uploadedDocs: UploadedDocDraft[];
+  /// Diisi saat step FIXING_REJECTED menunggu warga mengirim file pengganti untuk syarat
+  /// tertentu yang dipilih lewat nomor - dikosongkan lagi setelah file itu diterima.
+  awaitingReplacementRequirementId?: number;
 }
 
 export interface LoadedConversation {

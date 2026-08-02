@@ -1,15 +1,15 @@
 import fs from "fs";
 import type { WAMessage, WASocket } from "@whiskeysockets/baileys";
 import { logger } from "../logger";
-import { downloadAndValidate, hasSupportedMedia, MediaRejectedError } from "../media/download";
+import { hasSupportedMedia, MediaRejectedError } from "../media/download";
 import { finalizeRequest } from "../media/finalize";
 import { notifyStaffNewRequest } from "../notify/notifyStaff";
 import { mainMenuText, resolveServiceChoice, serviceLabel } from "./menu";
 import { MESSAGES, startCollectingText } from "./messages";
 import { loadRequirementsSnapshot, nextPendingRequirement, requirementsListText } from "./requirements";
-import { extractKtpData } from "../media/ocr";
-import { watermarkDocumentImage } from "../media/watermark";
+import { intakeDocument } from "./documentIntake";
 import { logInboundIfActiveRequest } from "./messageLog";
+import { fixIntroText, fixStatusListText, loadFixRejectedContext } from "./fixRejected";
 import { expirePendingRating, findPendingRating, submitRating } from "./rating";
 import { selfCancelRequest } from "./selfCancel";
 import { buildStatusReport } from "./statusReport";
@@ -44,6 +44,29 @@ export async function handleConversationMessage(
   const cancelTicketMatch = text?.trim().match(/^batal\s+(\S+)$/i);
   if (cancelTicketMatch) {
     await reply(sock, waJid, await selfCancelRequest(waJid, cancelTicketMatch[1]));
+    return;
+  }
+
+  // "perbaiki <nomor tiket>" - resubmit pengajuan yang DITOLAK tanpa harus kirim ulang
+  // SEMUA syarat dari nol (syarat lama otomatis dipakai lagi, tinggal ganti yang bermasalah).
+  const fixTicketMatch = text?.trim().match(/^perbaiki\s+(\S+)$/i);
+  if (fixTicketMatch) {
+    const result = await loadFixRejectedContext(waJid, fixTicketMatch[1]);
+    if (!result.ok) {
+      await reply(sock, waJid, result.message);
+      return;
+    }
+    const conv = await loadConversation(waJid);
+    await cleanupTempFiles(conv.context.uploadedDocs);
+    conv.step = "FIXING_REJECTED";
+    conv.requirementsSnapshot = result.context.requirementsSnapshot;
+    conv.context = {
+      serviceType: result.context.serviceType,
+      applicantName: result.context.applicantName,
+      uploadedDocs: result.context.uploadedDocs,
+    };
+    await saveConversation(conv);
+    await reply(sock, waJid, fixIntroText(result.context));
     return;
   }
 
@@ -144,36 +167,16 @@ export async function handleConversationMessage(
     }
 
     try {
-      const downloaded = await downloadAndValidate(sock, msg, waJid);
-      let ocrNik: string | undefined;
-      let ocrRawText: string | undefined;
-      if (downloaded.mimeType.startsWith("image/")) {
-        if (pending.ocrKtp) {
-          // OCR dulu di atas foto asli (belum ada watermark) supaya akurasi baca NIK tidak
-          // terganggu, baru watermark ditumpuk sebelum file ini disimpan permanen.
-          const ocrResult = await extractKtpData(downloaded.tempFilePath);
-          ocrNik = ocrResult?.nik;
-          ocrRawText = ocrResult?.rawText;
-        }
-
-        // Watermark diterapkan ke SEMUA syarat berupa gambar (bukan cuma yang ocrKtp) -
-        // KK, buku nikah, dsb sama-sama memuat data pribadi yang berisiko kalau bocor.
-        const original = await fs.promises.readFile(downloaded.tempFilePath);
-        const watermarked = await watermarkDocumentImage(
-          original,
-          conv.context.serviceType ? serviceLabel(conv.context.serviceType) : "PENGAJUAN"
-        );
-        await fs.promises.writeFile(downloaded.tempFilePath, watermarked);
-      }
-      conv.context.uploadedDocs.push({
-        requirementId: pending.id,
-        requirementName: pending.name,
-        tempFilePath: downloaded.tempFilePath,
-        fileName: downloaded.fileName,
-        mimeType: downloaded.mimeType,
-        ocrNik,
-        ocrRawText,
-      });
+      const draft = await intakeDocument(
+        sock,
+        msg,
+        waJid,
+        pending.id,
+        pending.name,
+        pending.ocrKtp,
+        conv.context.serviceType ? serviceLabel(conv.context.serviceType) : "PENGAJUAN"
+      );
+      conv.context.uploadedDocs.push(draft);
       await saveConversation(conv);
 
       const stillPending = nextPendingRequirement(
@@ -198,6 +201,86 @@ export async function handleConversationMessage(
         await reply(sock, waJid, "Terjadi kesalahan saat memproses file. Mohon kirim ulang.");
       }
     }
+    return;
+  }
+
+  if (conv.step === "FIXING_REJECTED") {
+    const filledIds = conv.context.uploadedDocs.map((d) => d.requirementId);
+    const missing = conv.requirementsSnapshot.filter((r) => !filledIds.includes(r.id));
+
+    if (normalized === "lanjut") {
+      if (missing.length > 0) {
+        await reply(
+          sock,
+          waJid,
+          `Masih ada syarat yang belum lengkap:\n${missing.map((r) => `- ${r.name}`).join("\n")}\n\n` +
+            `Mohon kirim dulu, atau ketik nomor syaratnya.`
+        );
+        return;
+      }
+      await finalizeAndReply(sock, waJid, waNumber, conv);
+      return;
+    }
+
+    const pickNum = normalized ? Number(normalized) : NaN;
+    if (Number.isInteger(pickNum) && pickNum >= 1 && pickNum <= conv.requirementsSnapshot.length) {
+      conv.context.awaitingReplacementRequirementId = conv.requirementsSnapshot[pickNum - 1].id;
+      await saveConversation(conv);
+      await reply(sock, waJid, `Baik, mohon kirim file baru untuk syarat: *${conv.requirementsSnapshot[pickNum - 1].name}*`);
+      return;
+    }
+
+    if (hasSupportedMedia(msg)) {
+      const targetId = conv.context.awaitingReplacementRequirementId ?? missing[0]?.id;
+      if (!targetId) {
+        await reply(
+          sock,
+          waJid,
+          `Semua syarat sudah lengkap.\n\n${fixStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs)}\n\n` +
+            `Ketik *lanjut* untuk mengirim ulang pengajuan, atau ketik nomor syarat yang mau diganti.`
+        );
+        return;
+      }
+      const targetItem = conv.requirementsSnapshot.find((r) => r.id === targetId)!;
+      try {
+        const draft = await intakeDocument(
+          sock,
+          msg,
+          waJid,
+          targetItem.id,
+          targetItem.name,
+          targetItem.ocrKtp,
+          conv.context.serviceType ? serviceLabel(conv.context.serviceType) : "PENGAJUAN"
+        );
+        const oldEntry = conv.context.uploadedDocs.find((d) => d.requirementId === targetId);
+        if (oldEntry) await fs.promises.unlink(oldEntry.tempFilePath).catch(() => undefined);
+        conv.context.uploadedDocs = conv.context.uploadedDocs.filter((d) => d.requirementId !== targetId);
+        conv.context.uploadedDocs.push(draft);
+        conv.context.awaitingReplacementRequirementId = undefined;
+        await saveConversation(conv);
+        await reply(
+          sock,
+          waJid,
+          `Syarat *${targetItem.name}* sudah diperbarui.\n\n${fixStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs)}\n\n` +
+            `Ketik nomor syarat lain untuk mengganti, atau *lanjut* untuk mengirim ulang pengajuan.`
+        );
+      } catch (err) {
+        if (err instanceof MediaRejectedError) {
+          await reply(sock, waJid, err.message);
+        } else {
+          logger.error({ err }, "Gagal memproses dokumen perbaikan");
+          await reply(sock, waJid, "Terjadi kesalahan saat memproses file. Mohon kirim ulang.");
+        }
+      }
+      return;
+    }
+
+    await reply(
+      sock,
+      waJid,
+      `${fixStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs)}\n\n` +
+        `Ketik nomor syarat yang mau diganti, atau *lanjut* kalau semua sudah benar.`
+    );
     return;
   }
 

@@ -3,6 +3,7 @@ import { startControlServer } from "./server/controlServer";
 import { startReconciler } from "./notify/reconciler";
 import { startExpiredConversationCleanup } from "./jobs/expireConversations";
 import { startPickupReminderJob } from "./jobs/remindPendingPickup";
+import { startAbandonedConversationReminder } from "./jobs/remindAbandonedConversations";
 import { warmRequirementsCache } from "./conversation/requirements";
 import { startSocket } from "./wa/socket";
 import { markBotDisconnected } from "./wa/connection";
@@ -12,6 +13,7 @@ async function main(): Promise<void> {
   startReconciler();
   startExpiredConversationCleanup();
   startPickupReminderJob();
+  startAbandonedConversationReminder();
   warmRequirementsCache().catch((err) => logger.warn({ err }, "Gagal warm-up cache syarat, akan diisi lazy per-request"));
   await startSocket({ type: "qr" });
   logger.info("Bot kelurahan siap. Jika belum tertaut, scan QR yang muncul di terminal atau lewat dashboard /bot.");

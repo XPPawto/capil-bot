@@ -84,6 +84,9 @@ model ConversationState {
   requirementsSnapshot Json?
   contextJson         Json?
   expiresAt           DateTime
+  /// Diisi sekali saat reminder "pengajuan belum selesai" terkirim, supaya warga tidak
+  /// di-spam berkali-kali kalau tetap idle melewati beberapa siklus job pengingat.
+  reminderSentAt      DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -205,6 +208,11 @@ model RequestMessage {
   adminId   Int?
   admin     Admin?           @relation(fields: [adminId], references: [id])
   createdAt DateTime         @default(now())
+  /// Diisi kalau pesan ini punya lampiran (mis. voice note warga yang tidak bisa dipahami
+  /// bot - direkam & diteruskan apa adanya supaya petugas bisa dengar langsung). Path relatif
+  /// ke UPLOAD_DIR, file-nya terenkripsi AES-256-GCM sama seperti berkas syarat lainnya.
+  attachmentPath     String?
+  attachmentMimeType String?
 
   @@index([requestId])
 }

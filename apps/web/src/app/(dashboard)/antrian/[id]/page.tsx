@@ -3,10 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { formatDateTime, serviceLabel, statusBadgeClass, statusLabel } from "@/lib/format";
 import { BackLink } from "@/components/BackLink";
 import { StatusActions } from "./StatusActions";
-import { MessageThread } from "./MessageThread";
 import { DocumentGallery } from "./DocumentGallery";
 import { AutoRefresh } from "./AutoRefresh";
-import { TakeoverToggle } from "./TakeoverToggle";
+import { ConversationPanel } from "./ConversationPanel";
 import { SendFileForm } from "./SendFileForm";
 
 export default async function RequestDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -80,15 +79,16 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
 
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-medium text-ink">Percakapan dengan Warga</h2>
-        <TakeoverToggle requestId={request.id} initialActive={takeover !== null} />
-        <MessageThread
+        <ConversationPanel
           requestId={request.id}
+          initialActive={takeover !== null}
           messages={request.messages.map((m) => ({
             id: m.id,
             direction: m.direction,
             message: m.message,
             createdAt: m.createdAt.toISOString(),
             adminName: m.admin?.name ?? null,
+            hasAudio: Boolean(m.attachmentPath),
           }))}
         />
       </section>

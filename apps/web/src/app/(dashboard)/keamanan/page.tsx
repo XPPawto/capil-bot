@@ -5,7 +5,10 @@ const PAGE_SIZE = 50;
 
 const PATTERN_BADGE: Record<string, string> = {
   SQLI: "bg-pastel-red text-pastel-red-ink",
+  CMD_INJECTION: "bg-pastel-red text-pastel-red-ink",
+  SSTI: "bg-pastel-red text-pastel-red-ink",
   XSS: "bg-pastel-yellow text-pastel-yellow-ink",
+  PATH_TRAVERSAL: "bg-pastel-blue text-pastel-blue-ink",
 };
 
 export default async function KeamananPage({
@@ -41,8 +44,8 @@ export default async function KeamananPage({
       <div>
         <h1 className="font-serif text-3xl italic tracking-tight text-ink">Keamanan</h1>
         <p className="mt-1 text-sm text-ink-muted">
-          Monitoring pola input yang menyerupai percobaan SQL Injection / XSS pada formulir login, pencarian
-          riwayat, dan validasi QR pengambilan.
+          Monitoring pola input yang menyerupai percobaan SQL Injection, XSS, Path Traversal, Command Injection,
+          dan Template Injection (SSTI) pada formulir login, pencarian riwayat, dan validasi QR pengambilan.
         </p>
       </div>
 

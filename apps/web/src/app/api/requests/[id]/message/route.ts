@@ -34,6 +34,7 @@ export async function GET(
       message: m.message,
       createdAt: m.createdAt.toISOString(),
       adminName: m.admin?.name ?? null,
+      hasAudio: Boolean(m.attachmentPath),
     })),
   });
 }
@@ -55,6 +56,14 @@ export async function POST(
   const request = await prisma.request.findUnique({ where: { id } });
   if (!request) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
+  }
+
+  // Wajib ambil alih dulu (lihat HumanTakeover) sebelum petugas boleh kirim pesan manual -
+  // dicek juga di server (bukan cuma tombol disabled di client) supaya tidak bisa dilewati
+  // lewat panggilan API langsung. Kalau tidak, bot bisa ikut auto-reply di saat bersamaan.
+  const takeover = await prisma.humanTakeover.findUnique({ where: { waJid: request.waJid } });
+  if (!takeover) {
+    return NextResponse.json({ error: "takeover_required" }, { status: 409 });
   }
 
   await prisma.requestMessage.create({

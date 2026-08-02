@@ -55,7 +55,8 @@ export async function sendStatusMessage(requestId: string): Promise<void> {
       text:
         `Mohon maaf, pengajuan *${label}* Anda (No. Tiket: *${req.ticketNumber}*) *ditolak*.\n` +
         `Alasan: ${req.rejectionReason ?? "-"}\n\n` +
-        `Ketik *menu* untuk mengajukan kembali.`,
+        `Kalau cuma sebagian syarat yang perlu diperbaiki, ketik *perbaiki ${req.ticketNumber}* - syarat yang sudah benar tidak perlu dikirim ulang.\n` +
+        `Atau ketik *menu* untuk mengajukan dari awal.`,
     });
   } else if (req.status === "SELESAI") {
     await humanSendMessage(sock, req.waJid, {

@@ -6,6 +6,7 @@ import { checkRateLimit } from "./rateLimit";
 import { humanSendMessage } from "../wa/humanSend";
 import { isHumanTakeoverActive } from "./humanTakeover";
 import { logInboundIfActiveRequest } from "./messageLog";
+import { handleVoiceNote } from "../media/voiceNote";
 
 interface MessagesUpsertPayload {
   messages: WAMessage[];
@@ -70,6 +71,18 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
             logger.error({ err, jid }, "Gagal mencatat pesan warga saat mode ambil-alih petugas")
           );
         }
+        // Simpan voice note apa adanya (petugas sudah pegang percakapan ini secara
+        // manual) - tanpa balasan panduan otomatis, supaya tidak bentrok dengan petugas.
+        await handleVoiceNote(sock, msg, jid, { sendGuidance: false }).catch((err) =>
+          logger.error({ err, jid }, "Gagal menyimpan pesan suara saat mode ambil-alih petugas")
+        );
+        continue;
+      }
+
+      // Voice note (banyak dipakai warga lansia) tidak bisa dipahami bot - simpan &
+      // teruskan ke dashboard petugas, balas panduan, JANGAN lanjut ke alur normal
+      // (supaya tidak dianggap "file tidak didukung" oleh validasi upload syarat).
+      if (await handleVoiceNote(sock, msg, jid, { sendGuidance: true })) {
         continue;
       }
 

@@ -23,6 +23,23 @@ const SUSPICIOUS_PATTERNS: [string, RegExp][] = [
   ["XSS", /<iframe[\s>]/i],
   ["XSS", /document\.(cookie|location)/i],
   ["XSS", /<svg[^>]*onload/i],
+
+  // Path traversal - percobaan keluar dari direktori yang dimaksud untuk baca file sistem.
+  ["PATH_TRAVERSAL", /(\.\.[/\\]){2,}/],
+  ["PATH_TRAVERSAL", /%2e%2e(%2f|%5c)/i],
+  ["PATH_TRAVERSAL", /\betc[/\\](passwd|shadow|hosts)\b/i],
+  ["PATH_TRAVERSAL", /\bwin(dows)?[/\\](win\.ini|system32)\b/i],
+
+  // Command injection - percobaan menyisipkan perintah shell lewat karakter meta.
+  ["CMD_INJECTION", /[;&|]\s*(rm|cat|wget|curl|nc|bash|sh|powershell|whoami|chmod|chown|id|uname)\b/i],
+  ["CMD_INJECTION", /\$\([^)]{1,60}\)/],
+  ["CMD_INJECTION", /`[^`]{1,60}`/],
+  ["CMD_INJECTION", />\s*\/dev\/(tcp|udp)\//i],
+
+  // Server-Side Template Injection - percobaan eksekusi ekspresi lewat mesin template.
+  ["SSTI", /\{\{[^}]{1,60}\}\}/],
+  ["SSTI", /\$\{[^}]{1,60}\}/],
+  ["SSTI", /<%[^%]{1,60}%>/],
 ];
 
 export function detectSuspiciousInput(value: string): string | null {

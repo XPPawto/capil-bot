@@ -68,5 +68,10 @@ export async function buildStatusReport(waJid: string): Promise<string> {
     ? `\n\nMasih *dicek* dan salah upload? Ketik *batal <nomor tiket>* untuk membatalkannya, mis. *batal ${requests.find((r) => r.status === "DICEK")?.ticketNumber}*.`
     : "";
 
-  return `Berikut status pengajuan Anda:\n\n${lines.join("\n\n")}${cancelHint}\n\nKetik *menu* untuk mengajukan layanan baru.`;
+  const rejected = requests.find((r) => r.status === "DITOLAK");
+  const fixHint = rejected
+    ? `\n\nPengajuan ditolak? Ketik *perbaiki ${rejected.ticketNumber}* untuk mengirim ulang cuma syarat yang bermasalah.`
+    : "";
+
+  return `Berikut status pengajuan Anda:\n\n${lines.join("\n\n")}${cancelHint}${fixHint}\n\nKetik *menu* untuk mengajukan layanan baru.`;
 }

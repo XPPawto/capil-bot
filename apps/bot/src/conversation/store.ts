@@ -31,6 +31,10 @@ export async function saveConversation(conv: LoadedConversation): Promise<void> 
       requirementsSnapshot: conv.requirementsSnapshot as any,
       contextJson: conv.context as any,
       expiresAt: expiresAt(),
+      // Reset tiap ada interaksi nyata, supaya kalau warga sempat lanjut lalu berhenti lagi
+      // di lain waktu, reminder "belum selesai" bisa terkirim ulang (bukan cuma sekali seumur
+      // percakapan).
+      reminderSentAt: null,
     },
     create: {
       waJid: conv.waJid,

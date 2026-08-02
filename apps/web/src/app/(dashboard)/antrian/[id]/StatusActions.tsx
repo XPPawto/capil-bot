@@ -11,6 +11,15 @@ interface StatusActionsProps {
   readyForPickupSentAt: string | null;
 }
 
+const REJECTION_TEMPLATES = [
+  "Foto KTP tidak jelas/buram, mohon kirim ulang dengan pencahayaan yang cukup.",
+  "Berkas belum lengkap, ada syarat yang belum terkirim.",
+  "Data pada berkas tidak sesuai dengan Kartu Keluarga.",
+  "Nama pemohon tidak sesuai dengan KTP.",
+  "Dokumen sudah tidak berlaku/kedaluwarsa.",
+  "Berkas yang dikirim buram/terpotong, mohon foto ulang seluruh dokumen.",
+];
+
 export function StatusActions({ requestId, status, readyForPickupSentAt }: StatusActionsProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -120,6 +129,23 @@ export function StatusActions({ requestId, status, readyForPickupSentAt }: Statu
 
       {showRejectForm && (
         <div className="flex flex-col gap-2 rounded-lg border border-line bg-canvas p-3">
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              if (e.target.value) setReason(e.target.value);
+              e.target.value = "";
+            }}
+            className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink"
+          >
+            <option value="" disabled>
+              Pilih alasan umum (opsional, tetap bisa diedit)...
+            </option>
+            {REJECTION_TEMPLATES.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
           <textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}

@@ -4,6 +4,7 @@ import { config } from "../config";
 import { logger } from "../logger";
 import { sendStatusMessage } from "../notify/sendStatusMessage";
 import { sendReadyForPickupMessage } from "../notify/sendReadyForPickup";
+import { sendCustomMessage } from "../notify/sendCustomMessage";
 import { logoutSocket, startSocket } from "../wa/socket";
 import { waState } from "../wa/state";
 
@@ -95,6 +96,22 @@ export function startControlServer(): void {
     } catch (err) {
       logger.warn({ err, requestId }, "Gagal kirim notifikasi siap diambil, akan di-retry oleh reconciler");
       res.status(202).json({ ok: false, retried: true });
+    }
+  });
+
+  app.post("/notify/custom-message", async (req, res) => {
+    const requestId = String(req.body?.requestId ?? "");
+    const message = String(req.body?.message ?? "");
+    if (!requestId || !message.trim()) {
+      res.status(400).json({ error: "missing_fields" });
+      return;
+    }
+    try {
+      await sendCustomMessage(requestId, message);
+      res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err, requestId }, "Gagal mengirim pesan bebas ke warga");
+      res.status(502).json({ error: "send_failed" });
     }
   });
 

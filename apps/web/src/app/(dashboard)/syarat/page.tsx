@@ -17,35 +17,37 @@ export default async function SyaratPage({
   return (
     <div className="flex flex-col gap-8">
       <div>
-        <h1 className="text-xl font-semibold text-neutral-900">Syarat Layanan</h1>
-        <p className="text-sm text-neutral-500">Daftar dokumen yang diminta bot ke warga untuk tiap layanan.</p>
+        <h1 className="font-serif text-3xl italic tracking-tight text-ink">Syarat Layanan</h1>
+        <p className="mt-1 text-sm text-ink-muted">Daftar dokumen yang diminta bot ke warga untuk tiap layanan.</p>
       </div>
 
-      {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
-      )}
+      {error && <p className="rounded-md bg-pastel-red px-3 py-2 text-sm text-pastel-red-ink">{error}</p>}
 
       {SERVICE_TYPES.map((serviceType) => {
         const items = requirements.filter((r) => r.serviceType === serviceType);
         return (
           <section key={serviceType} className="flex flex-col gap-3">
-            <h2 className="text-sm font-semibold text-neutral-900">{serviceLabel(serviceType)}</h2>
-            <ul className="divide-y divide-neutral-100 rounded-lg border border-neutral-200">
+            <h2 className="text-sm font-semibold text-ink">{serviceLabel(serviceType)}</h2>
+            <ul className="divide-y divide-line rounded-xl border border-line bg-surface">
               {items.map((item, idx) => (
-                <li key={item.id} className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-                  <span className={item.active ? "text-neutral-900" : "text-neutral-400 line-through"}>
-                    {item.name}
+                <li
+                  key={item.id}
+                  className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <span className={item.active ? "text-ink" : "text-ink-muted line-through"}>
+                    {idx + 1}. {item.name}
                   </span>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <form action={`/api/requirements/${item.id}`} method="POST">
                       <input type="hidden" name="action" value="move" />
                       <input type="hidden" name="direction" value="up" />
                       <button
                         type="submit"
                         disabled={idx === 0}
-                        className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-30"
+                        aria-label="Naikkan urutan"
+                        className="rounded-md border border-line px-2 py-1 text-xs text-ink-muted transition-colors hover:bg-surface-hover disabled:opacity-30"
                       >
-                        Naik
+                        &uarr;
                       </button>
                     </form>
                     <form action={`/api/requirements/${item.id}`} method="POST">
@@ -54,20 +56,27 @@ export default async function SyaratPage({
                       <button
                         type="submit"
                         disabled={idx === items.length - 1}
-                        className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-30"
+                        aria-label="Turunkan urutan"
+                        className="rounded-md border border-line px-2 py-1 text-xs text-ink-muted transition-colors hover:bg-surface-hover disabled:opacity-30"
                       >
-                        Turun
+                        &darr;
                       </button>
                     </form>
                     <form action={`/api/requirements/${item.id}`} method="POST">
                       <input type="hidden" name="action" value="toggle" />
-                      <button type="submit" className="rounded border border-neutral-300 px-2 py-1 text-xs">
+                      <button
+                        type="submit"
+                        className="rounded-md border border-line px-2.5 py-1 text-xs text-ink-muted transition-colors hover:bg-surface-hover"
+                      >
                         {item.active ? "Nonaktifkan" : "Aktifkan"}
                       </button>
                     </form>
                     <form action={`/api/requirements/${item.id}`} method="POST">
                       <input type="hidden" name="action" value="delete" />
-                      <button type="submit" className="rounded border border-red-300 px-2 py-1 text-xs text-red-700">
+                      <button
+                        type="submit"
+                        className="rounded-md border border-pastel-red-ink/30 px-2.5 py-1 text-xs text-pastel-red-ink transition-colors hover:bg-pastel-red"
+                      >
                         Hapus
                       </button>
                     </form>
@@ -75,7 +84,7 @@ export default async function SyaratPage({
                 </li>
               ))}
               {items.length === 0 && (
-                <li className="px-4 py-2 text-sm text-neutral-400">Belum ada syarat untuk layanan ini.</li>
+                <li className="px-4 py-3 text-sm text-ink-muted">Belum ada syarat untuk layanan ini.</li>
               )}
             </ul>
             <form action="/api/requirements" method="POST" className="flex gap-2">
@@ -84,11 +93,11 @@ export default async function SyaratPage({
                 name="name"
                 placeholder="Nama syarat baru"
                 required
-                className="flex-1 rounded-md border border-neutral-300 px-3 py-1.5 text-sm"
+                className="flex-1 rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink"
               />
               <button
                 type="submit"
-                className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800"
+                className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333]"
               >
                 Tambah
               </button>

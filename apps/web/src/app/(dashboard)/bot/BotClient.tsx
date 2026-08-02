@@ -21,6 +21,7 @@ export function BotClient() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function fetchStatus() {
@@ -85,6 +86,9 @@ export function BotClient() {
   }
 
   async function handleLogout() {
+    if (!window.confirm("Putuskan nomor WA bot? Warga tidak akan bisa mengirim pesan sampai disambungkan ulang.")) {
+      return;
+    }
     setError(null);
     setBusy(true);
     const res = await fetch("/api/bot/logout", { method: "POST" });
@@ -96,13 +100,24 @@ export function BotClient() {
     fetchStatus();
   }
 
+  async function handleCopyCode() {
+    if (!status?.pairingCode) return;
+    try {
+      await navigator.clipboard.writeText(status.pairingCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard tidak tersedia (mis. http tanpa TLS) - biarkan, kode tetap terlihat untuk disalin manual
+    }
+  }
+
   if (!status) {
-    return <p className="text-sm text-neutral-500">Memuat status bot...</p>;
+    return <p className="text-sm text-ink-muted">Memuat status bot...</p>;
   }
 
   if (status.offline) {
     return (
-      <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+      <p className="rounded-lg bg-pastel-red px-4 py-3 text-sm text-pastel-red-ink">
         Proses bot tidak berjalan atau tidak dapat dihubungi. Pastikan proses bot (apps/bot) sedang aktif.
       </p>
     );
@@ -110,21 +125,24 @@ export function BotClient() {
 
   if (status.connected) {
     return (
-      <div className="flex flex-col gap-3">
-        <div className="rounded-lg border border-green-200 bg-green-50 p-4">
-          <p className="text-sm font-medium text-green-800">Terhubung</p>
-          <p className="text-sm text-neutral-700">Nomor: {status.phoneNumber ?? "-"}</p>
+      <div className="flex flex-col gap-4">
+        <div className="rounded-xl border border-pastel-green-ink/30 bg-pastel-green p-5">
+          <p className="flex items-center gap-1.5 text-sm font-medium text-pastel-green-ink">
+            <span className="h-1.5 w-1.5 rounded-full bg-pastel-green-ink" />
+            Terhubung
+          </p>
+          <p className="mt-2 text-sm text-ink">Nomor: {status.phoneNumber ?? "-"}</p>
           {status.lastConnectedAt && (
-            <p className="text-xs text-neutral-500">
+            <p className="mt-0.5 text-xs text-ink-muted">
               Sejak {new Date(status.lastConnectedAt).toLocaleString("id-ID")}
             </p>
           )}
         </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="rounded-md bg-pastel-red px-3 py-2 text-sm text-pastel-red-ink">{error}</p>}
         <button
           disabled={busy}
           onClick={handleLogout}
-          className="w-fit rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+          className="w-fit rounded-md border border-pastel-red-ink/30 px-3.5 py-2 text-sm font-medium text-pastel-red-ink transition-colors hover:bg-pastel-red disabled:opacity-50"
         >
           Logout Nomor Bot
         </button>
@@ -134,41 +152,46 @@ export function BotClient() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex gap-2">
+      <div className="flex w-fit gap-1.5 rounded-full border border-line bg-surface p-1">
         <button
           onClick={() => setTab("qr")}
-          className={`rounded-md px-3 py-1.5 text-sm font-medium ${
-            tab === "qr" ? "bg-neutral-900 text-white" : "border border-neutral-300 text-neutral-700"
+          className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
+            tab === "qr" ? "bg-ink text-white" : "text-ink-muted hover:bg-surface-hover"
           }`}
         >
           QR Code
         </button>
         <button
           onClick={() => setTab("pairing")}
-          className={`rounded-md px-3 py-1.5 text-sm font-medium ${
-            tab === "pairing" ? "bg-neutral-900 text-white" : "border border-neutral-300 text-neutral-700"
+          className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
+            tab === "pairing" ? "bg-ink text-white" : "text-ink-muted hover:bg-surface-hover"
           }`}
         >
           Kode Pairing
         </button>
       </div>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="rounded-md bg-pastel-red px-3 py-2 text-sm text-pastel-red-ink">{error}</p>}
 
       {tab === "qr" ? (
         <div className="flex flex-col items-start gap-3">
           <button
             disabled={busy}
             onClick={handleConnectQr}
-            className="rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
+            className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333] disabled:opacity-50"
           >
             Mulai Sambungkan via QR
           </button>
+          {status.isConnecting && !status.qrDataUrl && (
+            <p className="text-sm text-ink-muted">Menyiapkan QR...</p>
+          )}
           {status.qrDataUrl && (
-            <div className="rounded-lg border border-neutral-200 p-4">
+            <div className="rounded-xl border border-line bg-surface p-4">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={status.qrDataUrl} alt="QR WhatsApp" width={256} height={256} />
-              <p className="mt-2 text-xs text-neutral-500">Scan dari WhatsApp &gt; Perangkat Tertaut.</p>
+              <p className="mt-2 max-w-64 text-xs text-ink-muted">
+                Buka WhatsApp di HP nomor bot &gt; Perangkat Tertaut &gt; Tautkan Perangkat, lalu scan QR ini.
+              </p>
             </div>
           )}
         </div>
@@ -179,22 +202,31 @@ export function BotClient() {
               value={phoneNumber}
               onChange={(e) => setPhoneNumber(e.target.value)}
               placeholder="Contoh: 6281234567890"
-              className="rounded-md border border-neutral-300 px-3 py-2 text-sm"
+              className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink"
             />
             <button
               disabled={busy}
               onClick={handleConnectPairing}
-              className="rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
+              className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333] disabled:opacity-50"
             >
               Kirim Kode Pairing
             </button>
           </div>
+          {status.isConnecting && !status.pairingCode && (
+            <p className="text-sm text-ink-muted">Membuat kode pairing...</p>
+          )}
           {status.pairingCode && (
-            <div className="rounded-lg border border-neutral-200 p-4">
-              <p className="font-mono text-2xl font-semibold tracking-widest text-neutral-900">
-                {status.pairingCode}
-              </p>
-              <p className="mt-2 text-xs text-neutral-500">
+            <div className="rounded-xl border border-line bg-surface p-4">
+              <div className="flex items-center gap-3">
+                <p className="font-mono text-2xl font-semibold tracking-widest text-ink">{status.pairingCode}</p>
+                <button
+                  onClick={handleCopyCode}
+                  className="rounded-md border border-line px-2 py-1 text-xs text-ink-muted transition-colors hover:bg-surface-hover"
+                >
+                  {copied ? "Tersalin" : "Salin"}
+                </button>
+              </div>
+              <p className="mt-2 max-w-64 text-xs text-ink-muted">
                 Masukkan kode ini di WhatsApp &gt; Perangkat Tertaut &gt; Tautkan dengan nomor telepon.
               </p>
             </div>

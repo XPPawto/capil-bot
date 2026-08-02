@@ -1,4 +1,5 @@
 import { getCurrentAdmin } from "@/lib/session";
+import { PasswordInput } from "./PasswordInput";
 
 export default async function AkunPage({
   searchParams,
@@ -11,49 +12,48 @@ export default async function AkunPage({
   return (
     <div className="flex max-w-md flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-neutral-900">Akun</h1>
-        <p className="text-sm text-neutral-500">Masuk sebagai {admin?.username}</p>
+        <h1 className="font-serif text-3xl italic tracking-tight text-ink">Akun</h1>
       </div>
 
-      {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
-      )}
+      <div className="flex items-center gap-3 rounded-xl border border-line bg-surface p-4">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-pastel-blue text-base font-semibold text-pastel-blue-ink">
+          {admin?.name?.slice(0, 1).toUpperCase()}
+        </span>
+        <div>
+          <p className="text-sm font-medium text-ink">{admin?.name}</p>
+          <p className="text-xs text-ink-muted">@{admin?.username}</p>
+        </div>
+      </div>
+
+      {error && <p className="rounded-md bg-pastel-red px-3 py-2 text-sm text-pastel-red-ink">{error}</p>}
       {success && (
-        <p className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+        <p className="rounded-md bg-pastel-green px-3 py-2 text-sm text-pastel-green-ink">
           Password berhasil diubah.
         </p>
       )}
 
-      <form action="/api/auth/change-password" method="POST" className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1">
-          <label htmlFor="currentPassword" className="text-sm font-medium text-neutral-700">
+      <form
+        action="/api/auth/change-password"
+        method="POST"
+        className="flex flex-col gap-4 rounded-xl border border-line bg-surface p-5"
+      >
+        <p className="text-sm font-medium text-ink">Ubah Password</p>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="currentPassword" className="text-xs font-medium uppercase tracking-wide text-ink-muted">
             Password Saat Ini
           </label>
-          <input
-            id="currentPassword"
-            name="currentPassword"
-            type="password"
-            required
-            className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
-          />
+          <PasswordInput id="currentPassword" name="currentPassword" required autoComplete="current-password" />
         </div>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="newPassword" className="text-sm font-medium text-neutral-700">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="newPassword" className="text-xs font-medium uppercase tracking-wide text-ink-muted">
             Password Baru
           </label>
-          <input
-            id="newPassword"
-            name="newPassword"
-            type="password"
-            required
-            minLength={8}
-            className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
-          />
-          <p className="text-xs text-neutral-500">Minimal 8 karakter.</p>
+          <PasswordInput id="newPassword" name="newPassword" required minLength={8} autoComplete="new-password" />
+          <p className="text-xs text-ink-muted">Minimal 8 karakter.</p>
         </div>
         <button
           type="submit"
-          className="w-fit rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800"
+          className="w-fit rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333]"
         >
           Simpan Password Baru
         </button>

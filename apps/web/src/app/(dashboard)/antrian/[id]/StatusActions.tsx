@@ -54,10 +54,16 @@ export function StatusActions({ requestId, status, readyForPickupSentAt }: Statu
     startTransition(() => router.refresh());
   }
 
+  function handleManualComplete() {
+    if (window.confirm("Tandai pengajuan ini SELESAI secara manual? Biasanya ini dilakukan lewat scan QR.")) {
+      void updateStatus("SELESAI");
+    }
+  }
+
   if (status === "DITOLAK" || status === "SELESAI") {
     return (
       <div className="flex items-center justify-between">
-        <p className="text-sm text-neutral-500">Tidak ada aksi lebih lanjut untuk status ini.</p>
+        <p className="text-sm text-ink-muted">Tidak ada aksi lebih lanjut untuk status ini.</p>
         <DeleteRequestButton requestId={requestId} redirectTo="/riwayat" />
       </div>
     );
@@ -65,13 +71,13 @@ export function StatusActions({ requestId, status, readyForPickupSentAt }: Statu
 
   return (
     <div className="flex flex-col gap-3">
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="rounded-md bg-pastel-red px-3 py-2 text-sm text-pastel-red-ink">{error}</p>}
       <div className="flex flex-wrap gap-2">
         {status === "DICEK" && (
           <button
             disabled={isPending}
             onClick={() => updateStatus("DIPROSES")}
-            className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333] disabled:opacity-50"
           >
             Proses Pengajuan
           </button>
@@ -81,14 +87,14 @@ export function StatusActions({ requestId, status, readyForPickupSentAt }: Statu
             <button
               disabled={isPending}
               onClick={sendReadyForPickup}
-              className="rounded-md bg-amber-500 px-3 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+              className="rounded-md border border-pastel-yellow-ink/30 px-3.5 py-2 text-sm font-medium text-pastel-yellow-ink transition-colors hover:bg-pastel-yellow disabled:opacity-50"
             >
               {readyForPickupSentAt ? "Kirim Ulang Notifikasi Siap Diambil" : "Kirim Notifikasi Siap Diambil"}
             </button>
             <button
               disabled={isPending}
-              onClick={() => updateStatus("SELESAI")}
-              className="rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+              onClick={handleManualComplete}
+              className="rounded-md border border-pastel-green-ink/30 px-3.5 py-2 text-sm font-medium text-pastel-green-ink transition-colors hover:bg-pastel-green disabled:opacity-50"
             >
               Tandai Selesai (manual)
             </button>
@@ -97,14 +103,14 @@ export function StatusActions({ requestId, status, readyForPickupSentAt }: Statu
         <button
           disabled={isPending}
           onClick={() => setShowRejectForm((v) => !v)}
-          className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+          className="rounded-md border border-pastel-red-ink/30 px-3.5 py-2 text-sm font-medium text-pastel-red-ink transition-colors hover:bg-pastel-red disabled:opacity-50"
         >
           Tolak
         </button>
       </div>
 
       {status === "DIPROSES" && (
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-ink-muted">
           {readyForPickupSentAt
             ? `Notifikasi siap diambil terakhir dikirim ${new Date(readyForPickupSentAt).toLocaleString("id-ID")}`
             : "Notifikasi siap diambil belum pernah dikirim."}
@@ -113,18 +119,18 @@ export function StatusActions({ requestId, status, readyForPickupSentAt }: Statu
       )}
 
       {showRejectForm && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 rounded-lg border border-line bg-canvas p-3">
           <textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="Alasan penolakan"
+            placeholder="Alasan penolakan (akan dikirim ke warga)"
             rows={3}
-            className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+            className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink"
           />
           <button
             disabled={isPending || !reason.trim()}
             onClick={() => updateStatus("DITOLAK", reason)}
-            className="w-fit rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            className="w-fit rounded-md bg-pastel-red-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
           >
             Konfirmasi Tolak
           </button>

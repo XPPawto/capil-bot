@@ -20,6 +20,11 @@ enum RequestStatus {
   SELESAI
 }
 
+enum MessageDirection {
+  OUTBOUND
+  INBOUND
+}
+
 /// Akun petugas/admin dashboard.
 model Admin {
   id               Int             @id @default(autoincrement())
@@ -32,6 +37,7 @@ model Admin {
   updatedAt        DateTime        @updatedAt
   sessions         Session[]
   statusHistories  StatusHistory[]
+  requestMessages  RequestMessage[]
 }
 
 /// Sesi login dashboard, disimpan di DB (bukan JWT) supaya logout = revoke langsung.
@@ -114,6 +120,7 @@ model Request {
 
   documents       RequestDocument[]
   statusHistories StatusHistory[]
+  messages        RequestMessage[]
 
   @@index([waJid])
   @@index([status])
@@ -150,6 +157,22 @@ model RequestDocument {
   filePath        String
   mimeType        String
   uploadedAt      DateTime @default(now())
+
+  @@index([requestId])
+}
+
+/// Log percakapan bebas (di luar alur formulir baku) antara petugas dan warga untuk satu
+/// pengajuan - OUTBOUND = petugas kirim lewat dashboard, INBOUND = warga chat bebas ke bot
+/// saat pengajuannya masih aktif (DICEK/DIPROSES).
+model RequestMessage {
+  id        Int              @id @default(autoincrement())
+  requestId String
+  request   Request          @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  direction MessageDirection
+  message   String           @db.Text
+  adminId   Int?
+  admin     Admin?           @relation(fields: [adminId], references: [id])
+  createdAt DateTime         @default(now())
 
   @@index([requestId])
 }

@@ -33,11 +33,11 @@ export function DeleteRequestButton({ requestId, redirectTo }: { requestId: stri
         type="button"
         onClick={handleDelete}
         disabled={isPending}
-        className="text-sm font-medium text-red-600 hover:underline disabled:opacity-50"
+        className="text-sm font-medium text-pastel-red-ink hover:underline disabled:opacity-50"
       >
         Hapus
       </button>
-      {error && <span className="text-xs text-red-600">{error}</span>}
+      {error && <span className="text-xs text-pastel-red-ink">{error}</span>}
     </span>
   );
 }

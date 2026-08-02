@@ -64,3 +64,19 @@ export async function notifyReadyForPickup(requestId: string): Promise<void> {
     // diamkan - reconciler di proses bot akan mencoba lagi secara berkala
   }
 }
+
+/**
+ * Pesan bebas tidak punya jalur retry otomatis (bukan notifikasi status baku) -
+ * kegagalan harus dikembalikan ke pemanggil supaya admin tahu harus kirim ulang.
+ */
+export async function sendCustomMessage(requestId: string, message: string): Promise<boolean> {
+  try {
+    const res = await callControlServer("/notify/custom-message", {
+      method: "POST",
+      body: JSON.stringify({ requestId, message }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

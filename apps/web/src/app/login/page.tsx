@@ -8,53 +8,59 @@ export default async function LoginPage({
   const { error } = await searchParams;
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 px-4">
-      <div className="flex items-center gap-3">
-        <Logo size={44} />
-        <div>
-          <h1 className="text-2xl font-semibold text-neutral-900">Login Admin</h1>
-          <p className="text-sm text-neutral-500">Dashboard Layanan Administrasi Kelurahan</p>
+    <main className="flex min-h-screen flex-col items-center justify-center bg-canvas px-4">
+      <div className="flex w-full max-w-sm flex-col gap-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Logo size={48} />
+          <div>
+            <h1 className="font-serif text-3xl italic tracking-tight text-ink">Selamat datang</h1>
+            <p className="mt-1 text-sm text-ink-muted">Dashboard Layanan Administrasi Kelurahan</p>
+          </div>
         </div>
+
+        <div className="rounded-xl border border-line bg-surface p-6">
+          {error && (
+            <p className="mb-4 rounded-md bg-pastel-red px-3 py-2 text-sm text-pastel-red-ink">{error}</p>
+          )}
+
+          <form action="/api/auth/login" method="POST" className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="username" className="text-xs font-medium uppercase tracking-wide text-ink-muted">
+                Username
+              </label>
+              <input
+                id="username"
+                name="username"
+                required
+                autoFocus
+                autoComplete="username"
+                className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="password" className="text-xs font-medium uppercase tracking-wide text-ink-muted">
+                Password
+              </label>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                required
+                autoComplete="current-password"
+                className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink"
+              />
+            </div>
+            <button
+              type="submit"
+              className="mt-2 rounded-md bg-ink px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#333333] active:scale-[0.98]"
+            >
+              Masuk
+            </button>
+          </form>
+        </div>
+
+        <p className="text-center text-xs text-ink-muted">Khusus untuk petugas kelurahan yang berwenang.</p>
       </div>
-
-      {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
-      )}
-
-      <form action="/api/auth/login" method="POST" className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1">
-          <label htmlFor="username" className="text-sm font-medium text-neutral-700">
-            Username
-          </label>
-          <input
-            id="username"
-            name="username"
-            required
-            autoFocus
-            autoComplete="username"
-            className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="password" className="text-sm font-medium text-neutral-700">
-            Password
-          </label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            required
-            autoComplete="current-password"
-            className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
-          />
-        </div>
-        <button
-          type="submit"
-          className="rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800"
-        >
-          Masuk
-        </button>
-      </form>
     </main>
   );
 }

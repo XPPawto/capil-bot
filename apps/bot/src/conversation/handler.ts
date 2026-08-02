@@ -7,6 +7,7 @@ import { notifyStaffNewRequest } from "../notify/notifyStaff";
 import { mainMenuText, resolveServiceChoice } from "./menu";
 import { MESSAGES, startCollectingText } from "./messages";
 import { loadRequirementsSnapshot, nextPendingRequirement, requirementsListText } from "./requirements";
+import { logInboundIfActiveRequest } from "./messageLog";
 import { buildStatusReport } from "./statusReport";
 import { loadConversation, resetConversation, saveConversation } from "./store";
 import type { ConversationContext, UploadedDocDraft } from "./types";
@@ -58,6 +59,13 @@ export async function handleConversationMessage(
   if (conv.step === "IDLE") {
     const choice = text ? resolveServiceChoice(text) : undefined;
     if (!choice) {
+      // Warga chat bebas di luar alur (mis. tanya progres) - catat sebagai konteks
+      // percakapan kalau ada pengajuan aktif, supaya kelihatan di dashboard petugas.
+      if (text) {
+        await logInboundIfActiveRequest(waJid, text).catch((err) =>
+          logger.error({ err }, "Gagal mencatat pesan masuk warga")
+        );
+      }
       await reply(sock, waJid, mainMenuText());
       return;
     }

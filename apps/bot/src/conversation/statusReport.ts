@@ -1,12 +1,6 @@
-import { prisma, RequestStatus } from "@kelurahan/db";
+import { prisma } from "@kelurahan/db";
 import { serviceLabel } from "./menu";
-
-const STATUS_LABEL: Record<RequestStatus, string> = {
-  DICEK: "Dicek",
-  DIPROSES: "Diproses",
-  DITOLAK: "Ditolak",
-  SELESAI: "Selesai",
-};
+import { STATUS_LABEL } from "./statusLabel";
 
 /**
  * Dipicu warga lewat command global "status" - tidak menyentuh ConversationState
@@ -42,5 +36,10 @@ export async function buildStatusReport(waJid: string): Promise<string> {
     return parts.join("\n");
   });
 
-  return `Berikut status pengajuan Anda:\n\n${lines.join("\n\n")}\n\nKetik *menu* untuk mengajukan layanan baru.`;
+  const hasCancellable = requests.some((r) => r.status === "DICEK");
+  const cancelHint = hasCancellable
+    ? `\n\nMasih *dicek* dan salah upload? Ketik *batal <nomor tiket>* untuk membatalkannya, mis. *batal ${requests.find((r) => r.status === "DICEK")?.ticketNumber}*.`
+    : "";
+
+  return `Berikut status pengajuan Anda:\n\n${lines.join("\n\n")}${cancelHint}\n\nKetik *menu* untuk mengajukan layanan baru.`;
 }

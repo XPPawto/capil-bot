@@ -2,6 +2,7 @@ import { prisma } from "@kelurahan/db";
 import { serviceLabel } from "../conversation/menu";
 import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
+import { humanSendMessage } from "../wa/humanSend";
 
 /**
  * Notifikasi terpisah dari "diproses" - QR pengambilan sudah dikirim sejak status
@@ -27,7 +28,7 @@ export async function sendReadyForPickupMessage(requestId: string): Promise<void
   }
 
   const label = serviceLabel(req.serviceType);
-  await sock.sendMessage(req.waJid, {
+  await humanSendMessage(sock, req.waJid, {
     text:
       `Kabar baik! Dokumen *${label}* Anda (No. Tiket: *${req.ticketNumber}*) sudah *siap diambil* ` +
       `di kantor kelurahan.\n\nJangan lupa bawa QR yang sudah kami kirim sebelumnya untuk ditunjukkan ke petugas.`,

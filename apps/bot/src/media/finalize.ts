@@ -6,13 +6,18 @@ import { config } from "../config";
 import { logger } from "../logger";
 import { resetConversation } from "../conversation/store";
 import type { ConversationContext } from "../conversation/types";
+import { encryptBuffer } from "./fileEncryption";
 import { generateTicketNumber } from "./ticketNumber";
 
 const pickupTokenAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 10);
+// Jauh lebih panjang dari pickupToken - ini jadi satu-satunya "kunci" pembuka halaman lacak
+// publik (/track/[trackingToken]), harus praktis mustahil ditebak/brute-force.
+const trackingTokenAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789", 24);
 
 export interface FinalizeResult {
   requestId: string;
   ticketNumber: string;
+  trackingToken: string;
 }
 
 /**
@@ -30,6 +35,7 @@ export async function finalizeRequest(
 ): Promise<FinalizeResult> {
   const requestId = nanoid();
   const pickupToken = pickupTokenAlphabet();
+  const trackingToken = trackingTokenAlphabet();
   const ticketNumber = await generateTicketNumber(serviceType);
 
   await prisma.request.create({
@@ -42,6 +48,7 @@ export async function finalizeRequest(
       waNumber,
       status: "DICEK",
       pickupToken,
+      trackingToken,
       notifiedStatus: "DICEK",
       notifiedAt: new Date(),
       documents: {
@@ -50,6 +57,8 @@ export async function finalizeRequest(
           fileName: doc.fileName,
           mimeType: doc.mimeType,
           filePath: path.join(requestId, doc.fileName),
+          ocrNik: doc.ocrNik,
+          ocrRawText: doc.ocrRawText,
         })),
       },
       statusHistories: {
@@ -64,13 +73,18 @@ export async function finalizeRequest(
   for (const doc of context.uploadedDocs) {
     const destPath = path.join(destDir, doc.fileName);
     try {
-      await fs.promises.rename(doc.tempFilePath, destPath);
+      // Dienkripsi (AES-256-GCM) baru ditulis ke penyimpanan permanen - kalau server
+      // ditembus dan folder storage/uploads disalin, isinya cuma bytes acak tanpa kunci.
+      const plain = await fs.promises.readFile(doc.tempFilePath);
+      const encrypted = encryptBuffer(plain);
+      await fs.promises.writeFile(destPath, encrypted);
+      await fs.promises.unlink(doc.tempFilePath).catch(() => undefined);
     } catch (err) {
-      logger.error({ err, doc }, "Gagal memindahkan file syarat ke penyimpanan permanen");
+      logger.error({ err, doc }, "Gagal memindahkan/mengenkripsi file syarat ke penyimpanan permanen");
     }
   }
 
   await resetConversation(waJid);
 
-  return { requestId, ticketNumber };
+  return { requestId, ticketNumber, trackingToken };
 }

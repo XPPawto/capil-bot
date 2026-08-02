@@ -11,6 +11,10 @@ export function middleware(req: NextRequest) {
   const hasCookie = req.cookies.has(COOKIE_NAME);
   const { pathname } = req.nextUrl;
 
+  if (pathname.startsWith("/track/")) {
+    return NextResponse.next();
+  }
+
   if (!hasCookie && pathname !== "/login") {
     const url = req.nextUrl.clone();
     url.pathname = "/login";

@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Prisma, RequestStatus, ServiceType } from "@kelurahan/db";
 import { prisma } from "@/lib/prisma";
 import { formatDateTime, serviceLabel, statusBadgeClass, statusLabel } from "@/lib/format";
+import { logSuspiciousFields } from "@/lib/securityLog";
 import { DeleteRequestButton } from "./DeleteRequestButton";
 
 interface RiwayatSearchParams {
@@ -33,6 +34,8 @@ export default async function RiwayatPage({
 }) {
   const sp = await searchParams;
   const page = Math.max(1, Number(sp.page) || 1);
+
+  await logSuspiciousFields("/riwayat", { q: sp.q, status: sp.status, serviceType: sp.serviceType });
 
   const where: Prisma.RequestWhereInput = {
     status: { in: ["DITOLAK", "SELESAI"] },

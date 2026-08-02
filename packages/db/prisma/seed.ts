@@ -46,13 +46,17 @@ async function main() {
 
   for (const [serviceType, names] of Object.entries(DEFAULT_REQUIREMENTS) as [ServiceType, string[]][]) {
     for (let i = 0; i < names.length; i++) {
+      const isKtp = names[i].toUpperCase().includes("KTP");
       const existing = await prisma.requirementTemplate.findFirst({
         where: { serviceType, name: names[i] },
       });
       if (!existing) {
         await prisma.requirementTemplate.create({
-          data: { serviceType, name: names[i], order: i + 1, active: true },
+          data: { serviceType, name: names[i], order: i + 1, active: true, ocrKtp: isKtp },
         });
+      } else if (isKtp && !existing.ocrKtp) {
+        // syarat KTP yang sudah ada dari sebelum fitur OCR ditambahkan - tandai juga.
+        await prisma.requirementTemplate.update({ where: { id: existing.id }, data: { ocrKtp: true } });
       }
     }
   }

@@ -24,3 +24,7 @@ packages/db/generated/
 # misc
 .DS_Store
 npm-debug.log*
+
+# Tesseract OCR language data - didownload otomatis oleh tesseract.js saat runtime,
+# tidak perlu (dan terlalu besar untuk) ikut di-commit.
+*.traineddata

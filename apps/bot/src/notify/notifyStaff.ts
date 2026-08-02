@@ -2,6 +2,7 @@ import type { WASocket } from "@whiskeysockets/baileys";
 import { prisma, ServiceType } from "@kelurahan/db";
 import { serviceLabel } from "../conversation/menu";
 import { logger } from "../logger";
+import { humanSendMessage } from "../wa/humanSend";
 
 function toJid(waNumber: string): string {
   return `${waNumber.replace(/\D/g, "")}@s.whatsapp.net`;
@@ -31,7 +32,7 @@ export async function notifyStaffNewRequest(
 
   for (const contact of contacts) {
     try {
-      await sock.sendMessage(toJid(contact.waNumber), { text });
+      await humanSendMessage(sock, toJid(contact.waNumber), { text });
     } catch (err) {
       logger.warn({ err, contact: contact.waNumber }, "Gagal kirim notifikasi pengajuan baru ke petugas");
     }

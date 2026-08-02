@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/apiGuard";
 import { serviceLabel } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { logSuspiciousFields } from "@/lib/securityLog";
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const guard = await requireAdmin();
@@ -9,6 +10,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const body = await req.json().catch(() => ({}));
   const token = typeof body?.token === "string" ? body.token.trim() : "";
+
+  await logSuspiciousFields("/api/pickup/validate", { token });
+
   if (!token) {
     return NextResponse.json({ valid: false, reason: "Kode QR kosong." }, { status: 400 });
   }

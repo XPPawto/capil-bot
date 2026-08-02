@@ -6,6 +6,8 @@ interface DocItem {
   id: number;
   requirementName: string;
   mimeType: string;
+  ocrNik: string | null;
+  ocrRawText: string | null;
 }
 
 export function DocumentGallery({ documents }: { documents: DocItem[] }) {
@@ -40,6 +42,17 @@ export function DocumentGallery({ documents }: { documents: DocItem[] }) {
             <span className="line-clamp-2 text-xs text-ink-muted transition-colors group-hover:text-ink">
               {doc.requirementName}
             </span>
+            {doc.ocrNik ? (
+              <span className="inline-flex w-fit items-center rounded-full bg-pastel-blue px-2 py-0.5 font-mono text-[10px] text-pastel-blue-ink">
+                NIK terbaca: {doc.ocrNik}
+              </span>
+            ) : (
+              doc.ocrRawText && (
+                <span className="inline-flex w-fit items-center rounded-full bg-pastel-yellow px-2 py-0.5 text-[10px] text-pastel-yellow-ink">
+                  OCR jalan, NIK tak terbaca jelas
+                </span>
+              )
+            )}
           </button>
         ))}
         {documents.length === 0 && <p className="col-span-full text-sm text-ink-muted">Belum ada berkas.</p>}
@@ -48,7 +61,20 @@ export function DocumentGallery({ documents }: { documents: DocItem[] }) {
       {current && (
         <div className="fixed inset-0 z-50 flex flex-col bg-black/85 p-4" onClick={() => setOpenIndex(null)}>
           <div className="mb-3 flex items-center justify-between text-white">
-            <p className="text-sm">{current.requirementName}</p>
+            <div>
+              <p className="text-sm">{current.requirementName}</p>
+              {current.ocrNik && (
+                <p className="mt-0.5 font-mono text-xs text-white/70">
+                  NIK terbaca (OCR): {current.ocrNik} &middot; mohon verifikasi manual
+                </p>
+              )}
+              {!current.ocrNik && current.ocrRawText && (
+                <p className="mt-0.5 max-w-md text-xs text-white/70">
+                  OCR tidak menemukan NIK 16 digit yang jelas. Teks mentah terbaca: “
+                  {current.ocrRawText.replace(/\s+/g, " ").trim().slice(0, 160)}”
+                </p>
+              )}
+            </div>
             <div className="flex items-center gap-4">
               <a
                 href={`/api/files/${current.id}`}

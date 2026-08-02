@@ -38,6 +38,19 @@ model Admin {
   sessions         Session[]
   statusHistories  StatusHistory[]
   requestMessages  RequestMessage[]
+  broadcasts       Broadcast[]
+  humanTakeovers   HumanTakeover[]
+}
+
+/// Kalau ada baris untuk suatu waJid, bot BERHENTI TOTAL membalas otomatis (menu/status/dsb)
+/// ke nomor itu - petugas sedang mengambil alih percakapan lewat dashboard secara manual.
+/// Pesan warga tetap dicatat ke RequestMessage supaya kelihatan di chat dashboard, bot cuma
+/// tidak ikut-ikutan membalas. Baris dihapus saat petugas melepas toggle (bot aktif lagi).
+model HumanTakeover {
+  waJid       String   @id
+  activatedAt DateTime @default(now())
+  adminId     Int?
+  admin       Admin?   @relation(fields: [adminId], references: [id])
 }
 
 /// Sesi login dashboard, disimpan di DB (bukan JWT) supaya logout = revoke langsung.
@@ -85,6 +98,9 @@ model RequirementTemplate {
   description String?
   order       Int
   active      Boolean     @default(true)
+  /// Kalau true, berkas yang dikirim warga untuk syarat ini akan di-OCR (dicari NIK-nya)
+  /// sebagai petunjuk petugas - bukan pengganti verifikasi manual.
+  ocrKtp      Boolean     @default(false)
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
@@ -104,6 +120,12 @@ model Request {
   rejectionReason   String?
   pickupToken       String        @unique
   pickupTokenUsedAt DateTime?
+  /// Token acak panjang untuk URL halaman lacak publik (/track/[trackingToken]) - SENGAJA
+  /// terpisah dari pickupToken (yang dipakai scan QR fisik di loket). Tanpa ini, ticketNumber
+  /// (sekuensial per layanan+bulan, gampang ditebak) bisa dipakai orang lain untuk melihat
+  /// status/nama/alasan penolakan pemohon lain (IDOR) - trackingToken jadi "kunci" yang cuma
+  /// dikirim bot ke WhatsApp pemohon aslinya.
+  trackingToken     String        @unique
   qrGeneratedAt     DateTime?
   pickupConfirmedAt DateTime?
   completedAt       DateTime?
@@ -115,6 +137,12 @@ model Request {
   readyForPickupSentAt      DateTime?
   /// Diisi sekali saat reminder otomatis "belum diambil" terkirim, supaya warga tidak di-spam berkali-kali.
   pickupReminderSentAt      DateTime?
+  /// Diisi bot saat minta rating (begitu status SELESAI). Dipakai jadi jendela waktu balasan
+  /// angka 1-5 dianggap sebagai rating, bukan pilihan menu layanan baru.
+  ratingRequestedAt DateTime?
+  ratingSubmittedAt DateTime?
+  /// 1-5, diisi warga lewat balasan chat setelah dokumen diambil.
+  rating            Int?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -157,6 +185,10 @@ model RequestDocument {
   filePath        String
   mimeType        String
   uploadedAt      DateTime @default(now())
+  /// Hasil OCR (kalau syaratnya ditandai ocrKtp) - petunjuk saja, petugas tetap wajib
+  /// mencocokkan dengan foto aslinya secara manual.
+  ocrNik          String?
+  ocrRawText      String?  @db.Text
 
   @@index([requestId])
 }
@@ -175,6 +207,34 @@ model RequestMessage {
   createdAt DateTime         @default(now())
 
   @@index([requestId])
+}
+
+/// Log pengumuman massal admin ke semua warga yang pernah punya pengajuan (distinct waJid).
+model Broadcast {
+  id              Int      @id @default(autoincrement())
+  message         String   @db.Text
+  recipientCount  Int
+  adminId         Int?
+  admin           Admin?   @relation(fields: [adminId], references: [id])
+  createdAt       DateTime @default(now())
+}
+
+/// Catatan monitoring: input warga/pengunjung yang polanya menyerupai percobaan SQL
+/// Injection/XSS. Ini murni defense-in-depth logging (Prisma sudah parameterized query
+/// di semua tempat jadi tidak ada celah SQLi nyata) - tujuannya supaya admin bisa lihat
+/// kalau ada yang sedang mencoba probing sistem, bukan bukti sistem berhasil ditembus.
+model SecurityLog {
+  id        Int      @id @default(autoincrement())
+  ip        String
+  path      String
+  field     String
+  value     String   @db.Text
+  pattern   String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([ip])
 }
 
 /// Jejak audit perubahan status tiap Request.

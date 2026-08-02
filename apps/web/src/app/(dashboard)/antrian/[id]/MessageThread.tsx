@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 
 interface MessageItem {
   id: number;
@@ -11,12 +10,54 @@ interface MessageItem {
   adminName: string | null;
 }
 
-export function MessageThread({ requestId, messages }: { requestId: string; messages: MessageItem[] }) {
-  const router = useRouter();
-  const [, startTransition] = useTransition();
+const POLL_MS = 3000;
+
+export function MessageThread({
+  requestId,
+  messages: initialMessages,
+}: {
+  requestId: string;
+  messages: MessageItem[];
+}) {
+  const [messages, setMessages] = useState(initialMessages);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const latestCreatedAtRef = useRef<string | undefined>(initialMessages.at(-1)?.createdAt);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function poll() {
+      try {
+        const url = new URL(`/api/requests/${requestId}/message`, window.location.origin);
+        if (latestCreatedAtRef.current) url.searchParams.set("since", latestCreatedAtRef.current);
+        const res = await fetch(url);
+        if (!res.ok || cancelled) return;
+        const data: { messages: MessageItem[] } = await res.json();
+        if (data.messages.length === 0) return;
+        setMessages((prev) => {
+          const seen = new Set(prev.map((m) => m.id));
+          const fresh = data.messages.filter((m) => !seen.has(m.id));
+          return fresh.length === 0 ? prev : [...prev, ...fresh];
+        });
+        latestCreatedAtRef.current = data.messages.at(-1)?.createdAt ?? latestCreatedAtRef.current;
+      } catch {
+        // koneksi gagal sesaat tidak masalah, dicoba lagi di polling berikutnya
+      }
+    }
+
+    const interval = setInterval(poll, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [requestId]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [messages]);
 
   async function handleSend() {
     const trimmed = text.trim();
@@ -33,8 +74,15 @@ export function MessageThread({ requestId, messages }: { requestId: string; mess
       setError("Gagal mengirim pesan (bot mungkin sedang offline). Coba lagi.");
       return;
     }
+    const optimistic: MessageItem = {
+      id: -Date.now(),
+      direction: "OUTBOUND",
+      message: trimmed,
+      createdAt: new Date().toISOString(),
+      adminName: null,
+    };
+    setMessages((prev) => [...prev, optimistic]);
     setText("");
-    startTransition(() => router.refresh());
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -46,7 +94,7 @@ export function MessageThread({ requestId, messages }: { requestId: string; mess
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-line bg-surface p-4">
-      <div className="flex max-h-72 flex-col gap-3 overflow-y-auto">
+      <div ref={scrollRef} className="flex max-h-72 flex-col gap-3 overflow-y-auto">
         {messages.length === 0 && <p className="text-sm text-ink-muted">Belum ada percakapan.</p>}
         {messages.map((m) => (
           <div key={m.id} className={`flex flex-col ${m.direction === "OUTBOUND" ? "items-end" : "items-start"}`}>

@@ -3,7 +3,15 @@
 import { useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { RequestStatus, ServiceType } from "@kelurahan/db";
-import { relativeDuration, serviceLabel, statusBadgeClass, statusLabel } from "@/lib/format";
+import {
+  priorityBadgeClass,
+  priorityLabel,
+  relativeDuration,
+  serviceLabel,
+  servicePriorityWeight,
+  statusBadgeClass,
+  statusLabel,
+} from "@/lib/format";
 
 export interface AntrianRow {
   id: string;
@@ -95,7 +103,20 @@ export function AntrianTable({ rows }: { rows: AntrianRow[] }) {
               >
                 <td className="px-4 py-3 font-mono text-xs text-ink">{r.ticketNumber}</td>
                 <td className="px-4 py-3 text-ink">{r.applicantName}</td>
-                <td className="px-4 py-3 text-ink-muted">{serviceLabel(r.serviceType)}</td>
+                <td className="px-4 py-3 text-ink-muted">
+                  <div className="flex items-center gap-1.5">
+                    {serviceLabel(r.serviceType)}
+                    {servicePriorityWeight(r.serviceType) > 1 && (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${priorityBadgeClass(
+                          servicePriorityWeight(r.serviceType)
+                        )}`}
+                      >
+                        {priorityLabel(servicePriorityWeight(r.serviceType))}
+                      </span>
+                    )}
+                  </div>
+                </td>
                 <td className="hidden px-4 py-3 text-ink-muted sm:table-cell">{r.waNumber}</td>
                 <td className="hidden px-4 py-3 text-ink-muted md:table-cell">{relativeDuration(r.createdAt)}</td>
                 <td className="px-4 py-3">

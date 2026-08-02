@@ -1,3 +1,5 @@
+import { signControlRequest } from "./hmacSign";
+
 const BOT_CONTROL_URL = process.env.BOT_CONTROL_URL ?? "http://127.0.0.1:4001";
 const BOT_CONTROL_SECRET = process.env.BOT_CONTROL_SECRET ?? "";
 
@@ -12,11 +14,17 @@ export interface BotStatus {
 }
 
 async function callControlServer(path: string, init?: RequestInit): Promise<Response> {
+  const method = init?.method?.toString().toUpperCase() ?? "GET";
+  const bodyString = typeof init?.body === "string" ? init.body : "";
+  const timestamp = Date.now().toString();
+  const signature = signControlRequest(BOT_CONTROL_SECRET, timestamp, method, path, bodyString);
+
   return fetch(`${BOT_CONTROL_URL}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
-      "x-control-secret": BOT_CONTROL_SECRET,
+      "x-timestamp": timestamp,
+      "x-signature": signature,
       ...(init?.headers ?? {}),
     },
     cache: "no-store",
@@ -78,5 +86,38 @@ export async function sendCustomMessage(requestId: string, message: string): Pro
     return res.ok;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Notifikasi handoff ke warga saat petugas toggle ambil-alih ON/OFF - best-effort, kalau
+ * bot sedang offline warga cukup tidak dapat pesan info ini (toggle di DB tetap berlaku).
+ */
+export async function notifyTakeover(waJid: string, active: boolean): Promise<boolean> {
+  try {
+    const res = await callControlServer("/notify/takeover", {
+      method: "POST",
+      body: JSON.stringify({ waJid, active }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Mengembalikan alasan gagal (kalau ada) supaya bisa ditampilkan ke admin. */
+export async function startBroadcast(message: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await callControlServer("/broadcast", {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { ok: false, error: data.error ?? "failed" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "bot_unreachable" };
   }
 }

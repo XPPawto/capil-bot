@@ -4,13 +4,19 @@ import { logger } from "../logger";
 import { downloadAndValidate, hasSupportedMedia, MediaRejectedError } from "../media/download";
 import { finalizeRequest } from "../media/finalize";
 import { notifyStaffNewRequest } from "../notify/notifyStaff";
-import { mainMenuText, resolveServiceChoice } from "./menu";
+import { mainMenuText, resolveServiceChoice, serviceLabel } from "./menu";
 import { MESSAGES, startCollectingText } from "./messages";
 import { loadRequirementsSnapshot, nextPendingRequirement, requirementsListText } from "./requirements";
+import { extractKtpData } from "../media/ocr";
+import { watermarkDocumentImage } from "../media/watermark";
 import { logInboundIfActiveRequest } from "./messageLog";
+import { expirePendingRating, findPendingRating, submitRating } from "./rating";
+import { selfCancelRequest } from "./selfCancel";
 import { buildStatusReport } from "./statusReport";
 import { loadConversation, resetConversation, saveConversation } from "./store";
 import type { ConversationContext, UploadedDocDraft } from "./types";
+import { isWithinWorkingHours, WORKING_HOURS_NOTE } from "./workingHours";
+import { humanSendMessage } from "../wa/humanSend";
 
 async function cleanupTempFiles(docs: UploadedDocDraft[]): Promise<void> {
   await Promise.all(
@@ -19,7 +25,7 @@ async function cleanupTempFiles(docs: UploadedDocDraft[]): Promise<void> {
 }
 
 async function reply(sock: WASocket, waJid: string, text: string): Promise<void> {
-  await sock.sendMessage(waJid, { text });
+  await humanSendMessage(sock, waJid, { text });
 }
 
 export async function handleConversationMessage(
@@ -30,6 +36,16 @@ export async function handleConversationMessage(
   msg: WAMessage
 ): Promise<void> {
   const normalized = text?.trim().toLowerCase();
+
+  // "batal <nomor tiket>" (mis. "batal KK-2608-0004") membatalkan pengajuan yang
+  // SUDAH terkirim (selama masih DICEK) - beda dari "batal" polos di bawah yang
+  // membatalkan proses upload yang sedang berjalan. Dicek lebih dulu supaya tidak
+  // ketabrak match "batal" biasa.
+  const cancelTicketMatch = text?.trim().match(/^batal\s+(\S+)$/i);
+  if (cancelTicketMatch) {
+    await reply(sock, waJid, await selfCancelRequest(waJid, cancelTicketMatch[1]));
+    return;
+  }
 
   if (normalized === "batal") {
     const conv = await loadConversation(waJid);
@@ -43,6 +59,9 @@ export async function handleConversationMessage(
     const conv = await loadConversation(waJid);
     await cleanupTempFiles(conv.context.uploadedDocs);
     await resetConversation(waJid);
+    // Warga sudah "pindah topik" secara eksplisit - jangan lagi anggap balasan angka
+    // berikutnya sebagai rating pengajuan lama yang mungkin masih dalam jendela waktu.
+    await expirePendingRating(waJid).catch(() => undefined);
     await reply(sock, waJid, mainMenuText());
     return;
   }
@@ -57,6 +76,19 @@ export async function handleConversationMessage(
   const conv = await loadConversation(waJid);
 
   if (conv.step === "IDLE") {
+    // Balasan angka polos 1-5 setelah pengajuan SELESAI dianggap rating kepuasan,
+    // BUKAN pilihan menu - meski "1"/"2"/"3" juga kebetulan kode layanan, ini sengaja
+    // diprioritaskan karena warga baru saja diminta menilai. Begitu warga ketik *menu*
+    // lagi, jendela rating ini otomatis kedaluwarsa (lihat handler "menu" di atas).
+    if (normalized && /^[1-5]$/.test(normalized)) {
+      const pendingRating = await findPendingRating(waJid);
+      if (pendingRating) {
+        await submitRating(pendingRating.id, Number(normalized));
+        await reply(sock, waJid, MESSAGES.ratingThanks(Number(normalized)));
+        return;
+      }
+    }
+
     const choice = text ? resolveServiceChoice(text) : undefined;
     if (!choice) {
       // Warga chat bebas di luar alur (mis. tanya progres) - catat sebagai konteks
@@ -113,12 +145,34 @@ export async function handleConversationMessage(
 
     try {
       const downloaded = await downloadAndValidate(sock, msg, waJid);
+      let ocrNik: string | undefined;
+      let ocrRawText: string | undefined;
+      if (downloaded.mimeType.startsWith("image/")) {
+        if (pending.ocrKtp) {
+          // OCR dulu di atas foto asli (belum ada watermark) supaya akurasi baca NIK tidak
+          // terganggu, baru watermark ditumpuk sebelum file ini disimpan permanen.
+          const ocrResult = await extractKtpData(downloaded.tempFilePath);
+          ocrNik = ocrResult?.nik;
+          ocrRawText = ocrResult?.rawText;
+        }
+
+        // Watermark diterapkan ke SEMUA syarat berupa gambar (bukan cuma yang ocrKtp) -
+        // KK, buku nikah, dsb sama-sama memuat data pribadi yang berisiko kalau bocor.
+        const original = await fs.promises.readFile(downloaded.tempFilePath);
+        const watermarked = await watermarkDocumentImage(
+          original,
+          conv.context.serviceType ? serviceLabel(conv.context.serviceType) : "PENGAJUAN"
+        );
+        await fs.promises.writeFile(downloaded.tempFilePath, watermarked);
+      }
       conv.context.uploadedDocs.push({
         requirementId: pending.id,
         requirementName: pending.name,
         tempFilePath: downloaded.tempFilePath,
         fileName: downloaded.fileName,
         mimeType: downloaded.mimeType,
+        ocrNik,
+        ocrRawText,
       });
       await saveConversation(conv);
 
@@ -163,7 +217,8 @@ async function finalizeAndReply(
     conv.context.applicantName!,
     conv.context
   );
-  await reply(sock, waJid, MESSAGES.submitted(result.ticketNumber));
+  const outsideHoursNote = isWithinWorkingHours() ? "" : WORKING_HOURS_NOTE;
+  await reply(sock, waJid, MESSAGES.submitted(result.ticketNumber, result.trackingToken) + outsideHoursNote);
 
   await notifyStaffNewRequest(sock, {
     ticketNumber: result.ticketNumber,

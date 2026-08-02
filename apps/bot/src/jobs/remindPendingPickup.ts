@@ -2,6 +2,7 @@ import { prisma } from "@kelurahan/db";
 import { serviceLabel } from "../conversation/menu";
 import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
+import { humanSendMessage } from "../wa/humanSend";
 
 const INTERVAL_MS = 60 * 60 * 1000; // cek tiap 1 jam
 const REMINDER_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000; // 3 hari sejak notifikasi siap-diambil
@@ -32,7 +33,7 @@ async function runOnce(): Promise<void> {
 
   for (const req of candidates) {
     try {
-      await sock.sendMessage(req.waJid, {
+      await humanSendMessage(sock, req.waJid, {
         text:
           `Halo, ini pengingat: dokumen *${serviceLabel(req.serviceType)}* Anda (No. Tiket: *${req.ticketNumber}*) ` +
           `sudah *siap diambil* di kantor kelurahan sejak beberapa hari lalu.\n\n` +

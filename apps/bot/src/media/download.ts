@@ -5,6 +5,7 @@ import { downloadMediaMessage, extractMessageContent } from "@whiskeysockets/bai
 import type { WAMessage, WASocket } from "@whiskeysockets/baileys";
 import { config } from "../config";
 import { logger } from "../logger";
+import { detectRealMimeType } from "./fileSignature";
 
 export class MediaRejectedError extends Error {}
 
@@ -84,7 +85,26 @@ export async function downloadAndValidate(
     throw new MediaRejectedError("Ukuran file terlalu besar (maks 10MB). Mohon kirim ulang dengan ukuran lebih kecil.");
   }
 
-  const ext = EXT_BY_MIME[info.mimetype] ?? "bin";
+  // Jangan percaya klaim mimetype dari WhatsApp (metadata dari klien pengirim, bisa
+  // dipalsukan - file berbahaya diganti ekstensi/mimetype-nya jadi terlihat seperti
+  // foto). Verifikasi dari signature byte isi filenya sendiri (ground truth), tolak
+  // kalau tidak cocok salah satu dari 3 tipe yang diizinkan - terlepas dari klaimnya.
+  const realMimeType = detectRealMimeType(buffer);
+  if (!realMimeType || !config.allowedMimeTypes.includes(realMimeType)) {
+    logger.warn(
+      { waJid, claimedMimeType: info.mimetype, detectedMimeType: realMimeType },
+      "File ditolak: isi file tidak cocok signature JPEG/PNG/PDF (kemungkinan percobaan file masquerading)"
+    );
+    throw new MediaRejectedError("Format file tidak dikenali atau tidak didukung. Mohon kirim foto (JPG/PNG) atau PDF asli.");
+  }
+  if (realMimeType !== info.mimetype) {
+    logger.warn(
+      { waJid, claimedMimeType: info.mimetype, detectedMimeType: realMimeType },
+      "Mimetype yang diklaim WhatsApp tidak cocok dengan isi file asli - dipakai hasil deteksi signature, bukan klaimnya"
+    );
+  }
+
+  const ext = EXT_BY_MIME[realMimeType] ?? "bin";
   const safeJid = waJid.replace(/[^a-zA-Z0-9._@-]/g, "_");
   const dir = path.join(config.tmpDir, safeJid);
   await fs.promises.mkdir(dir, { recursive: true });
@@ -92,5 +112,5 @@ export async function downloadAndValidate(
   const tempFilePath = path.join(dir, fileName);
   await fs.promises.writeFile(tempFilePath, buffer);
 
-  return { tempFilePath, fileName, mimeType: info.mimetype };
+  return { tempFilePath, fileName, mimeType: realMimeType };
 }

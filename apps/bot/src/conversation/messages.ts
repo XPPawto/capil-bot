@@ -1,3 +1,5 @@
+import { config } from "../config";
+
 export const MESSAGES = {
   askName: "Baik, silakan ketik nama lengkap pemohon.",
   invalidName: "Nama tidak valid, mohon ketik nama lengkap (minimal 3 karakter).",
@@ -12,10 +14,14 @@ export const MESSAGES = {
     if (!nextName) return `Semua syarat (${doneCount}/${total}) telah diterima, sedang diproses...`;
     return `Syarat diterima (${doneCount}/${total}).\nSelanjutnya, mohon kirim: *${nextName}*`;
   },
-  submitted: (ticketNumber: string) =>
+  submitted: (ticketNumber: string, trackingToken: string) =>
     `Semua syarat sudah lengkap.\nNomor tiket Anda: *${ticketNumber}*\n(catat/screenshot nomor ini sebagai referensi)\n\n` +
     `Data Anda sedang *dicek* oleh petugas. Anda akan menerima notifikasi begitu ada perkembangan, ` +
-    `atau ketik *status* kapan saja untuk cek sendiri.`,
+    `atau ketik *status* kapan saja untuk cek sendiri.\n\n` +
+    `Lacak status pengajuan lewat browser (link ini pribadi, jangan dibagikan ke orang lain): ` +
+    `${config.publicWebUrl}/track/${trackingToken}`,
+  ratingThanks: (rating: number) =>
+    `Terima kasih atas penilaian Anda (${rating}/5)! Masukan Anda membantu kami meningkatkan layanan.`,
 };
 
 export function startCollectingText(requirementsList: string, firstRequirementName: string): string {

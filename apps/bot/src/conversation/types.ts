@@ -6,6 +6,7 @@ export interface RequirementSnapshotItem {
   id: number;
   name: string;
   order: number;
+  ocrKtp: boolean;
 }
 
 export interface UploadedDocDraft {
@@ -14,6 +15,8 @@ export interface UploadedDocDraft {
   tempFilePath: string;
   fileName: string;
   mimeType: string;
+  ocrNik?: string;
+  ocrRawText?: string;
 }
 
 export interface ConversationContext {

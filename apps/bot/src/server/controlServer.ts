@@ -2,9 +2,12 @@ import express from "express";
 import { prisma } from "@kelurahan/db";
 import { config } from "../config";
 import { logger } from "../logger";
+import { verifyControlRequestSignature } from "./hmac";
 import { sendStatusMessage } from "../notify/sendStatusMessage";
 import { sendReadyForPickupMessage } from "../notify/sendReadyForPickup";
 import { sendCustomMessage } from "../notify/sendCustomMessage";
+import { sendTakeoverNotice } from "../notify/sendTakeoverNotice";
+import { runBroadcast } from "../notify/broadcast";
 import { logoutSocket, startSocket } from "../wa/socket";
 import { waState } from "../wa/state";
 
@@ -13,13 +16,34 @@ import { waState } from "../wa/state";
  * Satu-satunya klien adalah API route Next.js (browser tidak pernah bicara
  * langsung ke sini) - route Next.js itu sendiri sudah digerbangi sesi admin.
  */
+interface RequestWithRawBody extends express.Request {
+  rawBody?: string;
+}
+
 export function startControlServer(): void {
   const app = express();
-  app.use(express.json());
+  // verify: simpan body mentah persis seperti yang diterima di jaringan, supaya HMAC
+  // diverifikasi terhadap byte yang sama persis dengan yang ditandatangani sisi web -
+  // menyusun ulang JSON.stringify(req.body) di sini berisiko beda urutan/whitespace.
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as RequestWithRawBody).rawBody = buf.toString("utf8");
+      },
+    })
+  );
 
   app.use((req, res, next) => {
-    const secret = req.header("x-control-secret");
-    if (secret !== config.controlSecret) {
+    const rawBody = (req as RequestWithRawBody).rawBody ?? "";
+    const valid = verifyControlRequestSignature(
+      config.controlSecret,
+      req.header("x-timestamp"),
+      req.header("x-signature"),
+      req.method,
+      req.path,
+      rawBody
+    );
+    if (!valid) {
       res.status(401).json({ error: "unauthorized" });
       return;
     }
@@ -113,6 +137,38 @@ export function startControlServer(): void {
       logger.error({ err, requestId }, "Gagal mengirim pesan bebas ke warga");
       res.status(502).json({ error: "send_failed" });
     }
+  });
+
+  app.post("/notify/takeover", async (req, res) => {
+    const waJid = String(req.body?.waJid ?? "");
+    const active = Boolean(req.body?.active);
+    if (!waJid) {
+      res.status(400).json({ error: "missing_wajid" });
+      return;
+    }
+    try {
+      await sendTakeoverNotice(waJid, active);
+      res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err, waJid, active }, "Gagal mengirim notifikasi ambil-alih percakapan");
+      res.status(502).json({ error: "send_failed" });
+    }
+  });
+
+  app.post("/broadcast", (req, res) => {
+    const message = String(req.body?.message ?? "").trim();
+    if (!message) {
+      res.status(400).json({ error: "empty_message" });
+      return;
+    }
+    if (!waState.connected) {
+      res.status(409).json({ error: "not_connected" });
+      return;
+    }
+    // Respons langsung - pengiriman sesungguhnya jalan di background (bisa lama
+    // kalau penerimanya banyak, dikasih jeda antar pesan di dalam runBroadcast).
+    res.json({ ok: true });
+    runBroadcast(message).catch((err) => logger.error({ err }, "Broadcast gagal berjalan"));
   });
 
   app.listen(config.controlPort, "127.0.0.1", () => {

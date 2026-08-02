@@ -12,6 +12,7 @@
     "@kelurahan/db": "0.1.0",
     "bcryptjs": "^2.4.3",
     "html5-qrcode": "^2.3.8",
+    "ioredis": "^5.4.1",
     "next": "15.5.22",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

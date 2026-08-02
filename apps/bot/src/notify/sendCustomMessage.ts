@@ -1,6 +1,7 @@
 import { prisma } from "@kelurahan/db";
 import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
+import { humanSendMessage } from "../wa/humanSend";
 
 /**
  * Pesan bebas yang diketik petugas dari dashboard (klarifikasi, tanya-jawab kasus per
@@ -18,6 +19,6 @@ export async function sendCustomMessage(requestId: string, message: string): Pro
     throw new Error("Pengajuan tidak ditemukan.");
   }
 
-  await sock.sendMessage(req.waJid, { text: message });
+  await humanSendMessage(sock, req.waJid, { text: message });
   logger.info({ requestId }, "Pesan bebas dari petugas terkirim ke warga");
 }

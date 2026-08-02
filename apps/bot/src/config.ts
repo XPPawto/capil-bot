@@ -11,4 +11,6 @@ export const config = {
   maxFileSizeBytes: 10 * 1024 * 1024,
   allowedMimeTypes: ["image/jpeg", "image/png", "application/pdf"],
   conversationTtlHours: 48,
+  publicWebUrl: (process.env.PUBLIC_WEB_URL ?? "http://localhost:8450").replace(/\/$/, ""),
+  kelurahanName: process.env.KELURAHAN_NAME ?? "Kelurahan",
 };

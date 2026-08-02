@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/apiGuard";
 import { absoluteUrl } from "@/lib/absoluteUrl";
 import { prisma } from "@/lib/prisma";
+import { invalidateRequirementsCache } from "@/lib/redis";
 
 export async function POST(
   req: NextRequest,
@@ -27,6 +28,11 @@ export async function POST(
       where: { id: requirementId },
       data: { active: !current.active },
     });
+  } else if (action === "toggle-ocr") {
+    await prisma.requirementTemplate.update({
+      where: { id: requirementId },
+      data: { ocrKtp: !current.ocrKtp },
+    });
   } else if (action === "delete") {
     await prisma.requirementTemplate.delete({ where: { id: requirementId } });
   } else if (action === "move") {
@@ -45,6 +51,8 @@ export async function POST(
       ]);
     }
   }
+
+  await invalidateRequirementsCache(current.serviceType);
 
   return NextResponse.redirect(absoluteUrl(req, "/syarat"), { status: 303 });
 }

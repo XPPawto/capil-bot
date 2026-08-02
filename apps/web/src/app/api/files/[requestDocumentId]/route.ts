@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/apiGuard";
+import { decryptBuffer } from "@/lib/fileEncryption";
 import { prisma } from "@/lib/prisma";
 
 const UPLOAD_DIR = path.resolve(process.cwd(), "../..", process.env.UPLOAD_DIR ?? "./storage/uploads");
@@ -29,11 +30,21 @@ export async function GET(
     return NextResponse.json({ error: "invalid_path" }, { status: 400 });
   }
 
-  let buffer: Buffer;
+  let rawBuffer: Buffer;
   try {
-    buffer = await fs.promises.readFile(absolutePath);
+    rawBuffer = await fs.promises.readFile(absolutePath);
   } catch {
     return NextResponse.json({ error: "file_missing" }, { status: 404 });
+  }
+
+  // Berkas baru dienkripsi saat disimpan (lihat apps/bot/src/media/finalize.ts). Kalau
+  // dekripsi gagal (mis. berkas lama dari sebelum fitur ini ada), anggap sudah plaintext -
+  // tetap tampilkan apa adanya supaya berkas lama tidak mendadak "hilang".
+  let buffer: Buffer;
+  try {
+    buffer = decryptBuffer(rawBuffer);
+  } catch {
+    buffer = rawBuffer;
   }
 
   return new NextResponse(new Uint8Array(buffer), {

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Logo } from "@/components/Logo";
+import { NewRequestWatcher } from "./NewRequestWatcher";
 import {
   IconBot,
   IconClose,
@@ -11,9 +12,12 @@ import {
   IconGrid,
   IconHistory,
   IconLogout,
+  IconMegaphone,
   IconMenu,
   IconQueue,
   IconScan,
+  IconShield,
+  IconStar,
   IconUserCircle,
   IconUsers,
 } from "@/components/icons";
@@ -26,6 +30,9 @@ const NAV_ITEMS = [
   { href: "/bot", label: "Koneksi Bot", icon: IconBot },
   { href: "/syarat", label: "Syarat Layanan", icon: IconDocument },
   { href: "/petugas", label: "Kontak Petugas", icon: IconUsers },
+  { href: "/broadcast", label: "Broadcast", icon: IconMegaphone },
+  { href: "/kepuasan", label: "Indeks Kepuasan", icon: IconStar },
+  { href: "/keamanan", label: "Keamanan", icon: IconShield },
   { href: "/akun", label: "Akun", icon: IconUserCircle },
 ];
 
@@ -41,6 +48,7 @@ export function DashboardShell({ adminName, children }: { adminName: string; chi
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
+      <NewRequestWatcher />
       <header className="flex items-center justify-between border-b border-line bg-surface px-4 py-3 md:hidden">
         <button
           type="button"

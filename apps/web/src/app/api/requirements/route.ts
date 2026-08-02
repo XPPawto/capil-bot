@@ -3,6 +3,7 @@ import type { ServiceType } from "@kelurahan/db";
 import { requireAdmin } from "@/lib/apiGuard";
 import { absoluteUrl } from "@/lib/absoluteUrl";
 import { prisma } from "@/lib/prisma";
+import { invalidateRequirementsCache } from "@/lib/redis";
 
 const VALID_SERVICE_TYPES: ServiceType[] = ["KARTU_KELUARGA", "AKTE_KEMATIAN", "AKTE_KELAHIRAN"];
 
@@ -13,6 +14,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const form = await req.formData();
   const serviceType = String(form.get("serviceType") ?? "") as ServiceType;
   const name = String(form.get("name") ?? "").trim();
+  const ocrKtp = form.get("ocrKtp") === "on";
 
   if (!VALID_SERVICE_TYPES.includes(serviceType) || !name) {
     const url = absoluteUrl(req, "/syarat");
@@ -26,8 +28,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   });
 
   await prisma.requirementTemplate.create({
-    data: { serviceType, name, order: (maxOrder._max.order ?? 0) + 1, active: true },
+    data: { serviceType, name, order: (maxOrder._max.order ?? 0) + 1, active: true, ocrKtp },
   });
+  await invalidateRequirementsCache(serviceType);
 
   return NextResponse.redirect(absoluteUrl(req, "/syarat"), { status: 303 });
 }

@@ -4,6 +4,7 @@ import { prisma } from "@kelurahan/db";
 import { serviceLabel } from "../conversation/menu";
 import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
+import { humanSendMessage } from "../wa/humanSend";
 
 const pickupTokenAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 10);
 
@@ -32,22 +33,25 @@ export async function sendStatusMessage(requestId: string): Promise<void> {
       data: { pickupToken, pickupTokenUsedAt: null, qrGeneratedAt: new Date() },
     });
     const qrBuffer = await QRCode.toBuffer(pickupToken, { margin: 1, width: 400 });
-    await sock.sendMessage(req.waJid, {
+    await humanSendMessage(sock, req.waJid, {
       image: qrBuffer,
       caption:
         `Pengajuan *${label}* Anda (No. Tiket: *${req.ticketNumber}*) sedang *diproses*.\n\n` +
         `Simpan QR ini - nanti akan kami kabari lagi begitu dokumennya sudah siap diambil di kantor kelurahan.`,
     });
   } else if (req.status === "DITOLAK") {
-    await sock.sendMessage(req.waJid, {
+    await humanSendMessage(sock, req.waJid, {
       text:
         `Mohon maaf, pengajuan *${label}* Anda (No. Tiket: *${req.ticketNumber}*) *ditolak*.\n` +
         `Alasan: ${req.rejectionReason ?? "-"}\n\n` +
         `Ketik *menu* untuk mengajukan kembali.`,
     });
   } else if (req.status === "SELESAI") {
-    await sock.sendMessage(req.waJid, {
-      text: `Dokumen *${label}* Anda (No. Tiket: *${req.ticketNumber}*) telah *selesai* diambil. Terima kasih telah menggunakan layanan kami.`,
+    await humanSendMessage(sock, req.waJid, {
+      text:
+        `Dokumen *${label}* Anda (No. Tiket: *${req.ticketNumber}*) telah *selesai* diambil. ` +
+        `Terima kasih telah menggunakan layanan kami.\n\n` +
+        `Mohon balas pesan ini dengan angka *1-5* untuk menilai kepuasan Anda (5 = Sangat Puas).`,
     });
   } else {
     return;
@@ -55,7 +59,11 @@ export async function sendStatusMessage(requestId: string): Promise<void> {
 
   await prisma.request.update({
     where: { id: req.id },
-    data: { notifiedStatus: req.status, notifiedAt: new Date() },
+    data: {
+      notifiedStatus: req.status,
+      notifiedAt: new Date(),
+      ratingRequestedAt: req.status === "SELESAI" ? new Date() : req.ratingRequestedAt,
+    },
   });
   logger.info({ requestId: req.id, status: req.status }, "Notifikasi status terkirim ke warga");
 }

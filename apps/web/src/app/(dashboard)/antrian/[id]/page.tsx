@@ -5,6 +5,8 @@ import { BackLink } from "@/components/BackLink";
 import { StatusActions } from "./StatusActions";
 import { MessageThread } from "./MessageThread";
 import { DocumentGallery } from "./DocumentGallery";
+import { AutoRefresh } from "./AutoRefresh";
+import { TakeoverToggle } from "./TakeoverToggle";
 
 export default async function RequestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -19,8 +21,11 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
 
   if (!request) notFound();
 
+  const takeover = await prisma.humanTakeover.findUnique({ where: { waJid: request.waJid } });
+
   return (
     <div className="flex max-w-3xl flex-col gap-6">
+      <AutoRefresh />
       <BackLink href="/antrian" label="Kembali ke Antrian" />
 
       <div className="flex flex-col gap-3 rounded-xl border border-line bg-surface p-5 sm:flex-row sm:items-start sm:justify-between">
@@ -55,6 +60,8 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
             id: d.id,
             requirementName: d.requirementName,
             mimeType: d.mimeType,
+            ocrNik: d.ocrNik,
+            ocrRawText: d.ocrRawText,
           }))}
         />
       </section>
@@ -70,6 +77,7 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
 
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-medium text-ink">Percakapan dengan Warga</h2>
+        <TakeoverToggle requestId={request.id} initialActive={takeover !== null} />
         <MessageThread
           requestId={request.id}
           messages={request.messages.map((m) => ({

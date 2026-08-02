@@ -20,6 +20,41 @@ const STATUS_BADGE_CLASS: Record<RequestStatus, string> = {
   SELESAI: "bg-pastel-green text-pastel-green-ink",
 };
 
+/**
+ * Bobot urgensi per layanan untuk priority queue di halaman Antrian - Akte Kematian
+ * biasanya dibutuhkan mendesak (pemakaman/klaim asuransi), jadi disodok ke atas
+ * antrian meski masuknya belakangan dibanding KK yang tidak mendesak.
+ */
+const SERVICE_PRIORITY_WEIGHT: Record<ServiceType, number> = {
+  AKTE_KEMATIAN: 3,
+  AKTE_KELAHIRAN: 2,
+  KARTU_KELUARGA: 1,
+};
+
+const PRIORITY_LABEL: Record<number, string> = {
+  3: "Mendesak",
+  2: "Prioritas",
+  1: "Normal",
+};
+
+const PRIORITY_BADGE_CLASS: Record<number, string> = {
+  3: "bg-pastel-red text-pastel-red-ink",
+  2: "bg-pastel-yellow text-pastel-yellow-ink",
+  1: "bg-canvas text-ink-muted",
+};
+
+export function servicePriorityWeight(serviceType: ServiceType): number {
+  return SERVICE_PRIORITY_WEIGHT[serviceType] ?? 1;
+}
+
+export function priorityLabel(weight: number): string {
+  return PRIORITY_LABEL[weight] ?? "Normal";
+}
+
+export function priorityBadgeClass(weight: number): string {
+  return PRIORITY_BADGE_CLASS[weight] ?? "bg-canvas text-ink-muted";
+}
+
 export function serviceLabel(serviceType: ServiceType): string {
   return SERVICE_LABELS[serviceType] ?? serviceType;
 }
@@ -34,6 +69,17 @@ export function statusBadgeClass(status: RequestStatus): string {
 
 export function formatDateTime(date: Date | string): string {
   return new Date(date).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** Samarkan nama pemohon untuk halaman lacak publik, mis. "Budi Santoso" -> "B**i S*****o". */
+export function maskName(name: string): string {
+  return name
+    .split(" ")
+    .map((word) => {
+      if (word.length <= 2) return word[0] + "*".repeat(Math.max(0, word.length - 1));
+      return word[0] + "*".repeat(word.length - 2) + word[word.length - 1];
+    })
+    .join(" ");
 }
 
 /** Estimasi lama menunggu dalam bahasa manusia, mis. "3 hari", "5 jam", "baru saja". */

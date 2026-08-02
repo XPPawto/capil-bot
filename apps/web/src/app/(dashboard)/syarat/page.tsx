@@ -36,8 +36,23 @@ export default async function SyaratPage({
                 >
                   <span className={item.active ? "text-ink" : "text-ink-muted line-through"}>
                     {idx + 1}. {item.name}
+                    {item.ocrKtp && (
+                      <span className="ml-2 inline-flex items-center rounded-full bg-pastel-blue px-2 py-0.5 align-middle text-[10px] font-medium uppercase tracking-wide text-pastel-blue-ink">
+                        OCR KTP
+                      </span>
+                    )}
                   </span>
                   <div className="flex flex-wrap items-center gap-1.5">
+                    <form action={`/api/requirements/${item.id}`} method="POST">
+                      <input type="hidden" name="action" value="toggle-ocr" />
+                      <button
+                        type="submit"
+                        title="Kalau diaktifkan, foto yang dikirim warga untuk syarat ini akan di-scan otomatis (OCR) untuk mencari NIK sebagai petunjuk petugas."
+                        className="rounded-md border border-line px-2.5 py-1 text-xs text-ink-muted transition-colors hover:bg-surface-hover"
+                      >
+                        {item.ocrKtp ? "Matikan OCR" : "Jadikan Syarat KTP (OCR)"}
+                      </button>
+                    </form>
                     <form action={`/api/requirements/${item.id}`} method="POST">
                       <input type="hidden" name="action" value="move" />
                       <input type="hidden" name="direction" value="up" />
@@ -87,14 +102,18 @@ export default async function SyaratPage({
                 <li className="px-4 py-3 text-sm text-ink-muted">Belum ada syarat untuk layanan ini.</li>
               )}
             </ul>
-            <form action="/api/requirements" method="POST" className="flex gap-2">
+            <form action="/api/requirements" method="POST" className="flex flex-wrap items-center gap-2">
               <input type="hidden" name="serviceType" value={serviceType} />
               <input
                 name="name"
                 placeholder="Nama syarat baru"
                 required
-                className="flex-1 rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink"
+                className="min-w-[200px] flex-1 rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink"
               />
+              <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+                <input type="checkbox" name="ocrKtp" className="h-3.5 w-3.5 rounded border-line" />
+                Syarat foto KTP (aktifkan OCR)
+              </label>
               <button
                 type="submit"
                 className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333]"

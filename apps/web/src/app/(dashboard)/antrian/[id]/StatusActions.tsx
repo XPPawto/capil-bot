@@ -86,7 +86,7 @@ export function StatusActions({ requestId, status, readyForPickupSentAt }: Statu
           <button
             disabled={isPending}
             onClick={() => updateStatus("DIPROSES")}
-            className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333] disabled:opacity-50"
+            className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
           >
             Proses Pengajuan
           </button>
@@ -156,7 +156,7 @@ export function StatusActions({ requestId, status, readyForPickupSentAt }: Statu
           <button
             disabled={isPending || !reason.trim()}
             onClick={() => updateStatus("DITOLAK", reason)}
-            className="w-fit rounded-md bg-pastel-red-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+            className="w-fit rounded-md bg-pastel-red-ink px-3.5 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
           >
             Konfirmasi Tolak
           </button>

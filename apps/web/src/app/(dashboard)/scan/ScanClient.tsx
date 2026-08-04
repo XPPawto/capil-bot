@@ -135,7 +135,7 @@ export function ScanClient() {
               setMode(m.key);
             }}
             className={`flex-1 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-              mode === m.key ? "bg-ink text-white" : "text-ink-muted hover:bg-surface-hover"
+              mode === m.key ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
             }`}
           >
             {m.label}
@@ -181,7 +181,7 @@ export function ScanClient() {
               <button
                 type="submit"
                 disabled={busy || !manualToken.trim()}
-                className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333] disabled:opacity-50"
+                className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
               >
                 Cek
               </button>

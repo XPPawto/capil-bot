@@ -107,7 +107,7 @@ export function MessageThread({
           <div key={m.id} className={`flex flex-col ${m.direction === "OUTBOUND" ? "items-end" : "items-start"}`}>
             <div
               className={`max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
-                m.direction === "OUTBOUND" ? "bg-ink text-white" : "bg-canvas text-ink"
+                m.direction === "OUTBOUND" ? "bg-ink text-canvas" : "bg-canvas text-ink"
               }`}
             >
               {m.message}
@@ -143,7 +143,7 @@ export function MessageThread({
         <button
           onClick={handleSend}
           disabled={disabled || sending || !text.trim()}
-          className="self-end rounded-md bg-ink px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333] disabled:opacity-50"
+          className="self-end rounded-md bg-ink px-4 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
         >
           Kirim
         </button>

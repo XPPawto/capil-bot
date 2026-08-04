@@ -84,7 +84,7 @@ export default async function PetugasPage({
         </div>
         <button
           type="submit"
-          className="w-fit rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333]"
+          className="w-fit rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90"
         >
           Tambah Kontak
         </button>

@@ -58,7 +58,7 @@ export function TakeoverToggle({
           onClick={toggle}
           disabled={pending}
           className={`shrink-0 rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
-            active ? "bg-ink text-white hover:bg-[#333333]" : "border border-line text-ink hover:bg-surface-hover"
+            active ? "bg-ink text-canvas hover:opacity-90" : "border border-line text-ink hover:bg-surface-hover"
           }`}
         >
           {pending ? "Memproses..." : active ? "Lepas, kembalikan ke bot" : "Ambil Alih Percakapan"}

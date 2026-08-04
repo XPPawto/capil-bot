@@ -69,7 +69,7 @@ export function AntrianTable({ rows }: { rows: AntrianRow[] }) {
               onClick={() => setStatusFilter(f.key)}
               className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
                 statusFilter === f.key
-                  ? "bg-ink text-white"
+                  ? "bg-ink text-canvas"
                   : "border border-line text-ink-muted hover:bg-surface-hover"
               }`}
             >

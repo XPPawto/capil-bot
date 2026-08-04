@@ -1,21 +1,21 @@
 @import "tailwindcss";
 
 @theme {
-  --color-canvas: #fbfbfa;
-  --color-surface: #ffffff;
-  --color-surface-hover: #f3f2ef;
-  --color-line: #eaeaea;
-  --color-ink: #1a1a18;
-  --color-ink-muted: #787774;
+  --color-canvas: #151412;
+  --color-surface: #1d1c19;
+  --color-surface-hover: #27251f;
+  --color-line: #38352f;
+  --color-ink: #f3f1ec;
+  --color-ink-muted: #a19c92;
 
-  --color-pastel-red: #fdebec;
-  --color-pastel-red-ink: #9f2f2d;
-  --color-pastel-blue: #e1f3fe;
-  --color-pastel-blue-ink: #1f6c9f;
-  --color-pastel-green: #edf3ec;
-  --color-pastel-green-ink: #346538;
-  --color-pastel-yellow: #fbf3db;
-  --color-pastel-yellow-ink: #956400;
+  --color-pastel-red: #3a221f;
+  --color-pastel-red-ink: #f0a099;
+  --color-pastel-blue: #1c2c38;
+  --color-pastel-blue-ink: #7ec2ef;
+  --color-pastel-green: #1e2e21;
+  --color-pastel-green-ink: #8ccc9b;
+  --color-pastel-yellow: #362c14;
+  --color-pastel-yellow-ink: #e3bd66;
 
   --font-sans: var(--font-ui), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-serif: var(--font-heading), ui-serif, Georgia, serif;
@@ -24,6 +24,10 @@
 
 * {
   border-color: var(--color-line);
+}
+
+html {
+  color-scheme: dark;
 }
 
 body {

@@ -156,7 +156,7 @@ export function BotClient() {
         <button
           onClick={() => setTab("qr")}
           className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
-            tab === "qr" ? "bg-ink text-white" : "text-ink-muted hover:bg-surface-hover"
+            tab === "qr" ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
           }`}
         >
           QR Code
@@ -164,7 +164,7 @@ export function BotClient() {
         <button
           onClick={() => setTab("pairing")}
           className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
-            tab === "pairing" ? "bg-ink text-white" : "text-ink-muted hover:bg-surface-hover"
+            tab === "pairing" ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
           }`}
         >
           Kode Pairing
@@ -178,7 +178,7 @@ export function BotClient() {
           <button
             disabled={busy}
             onClick={handleConnectQr}
-            className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333] disabled:opacity-50"
+            className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
           >
             Mulai Sambungkan via QR
           </button>
@@ -207,7 +207,7 @@ export function BotClient() {
             <button
               disabled={busy}
               onClick={handleConnectPairing}
-              className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#333333] disabled:opacity-50"
+              className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
             >
               Kirim Kode Pairing
             </button>

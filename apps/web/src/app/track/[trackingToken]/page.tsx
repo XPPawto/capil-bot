@@ -72,7 +72,7 @@ export default async function TrackPage({
                     <div
                       className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-medium ${
                         isDone || isCurrent
-                          ? "border-ink bg-ink text-white"
+                          ? "border-ink bg-ink text-canvas"
                           : "border-line bg-canvas text-ink-muted"
                       }`}
                     >

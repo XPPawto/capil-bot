@@ -3,7 +3,16 @@ import { prisma } from "@/lib/prisma";
 import { serviceLabel } from "@/lib/format";
 import { IconStar } from "@/components/icons";
 
-const SERVICE_TYPES: ServiceType[] = ["KARTU_KELUARGA", "AKTE_KEMATIAN", "AKTE_KELAHIRAN"];
+// KARTU_KELUARGA (legacy) tetap disertakan supaya statistik pengajuan lama sebelum
+// dipecah jadi 3 sub-jenis masih kelihatan di rekap ini.
+const SERVICE_TYPES: ServiceType[] = [
+  "KK_BARCODE",
+  "KK_PISAH",
+  "KK_TAMBAH_ANGGOTA",
+  "AKTE_KEMATIAN",
+  "AKTE_KELAHIRAN",
+  "KARTU_KELUARGA",
+];
 
 export default async function KepuasanPage() {
   const [overall, perServiceRating, usagePerService, distribution] = await Promise.all([

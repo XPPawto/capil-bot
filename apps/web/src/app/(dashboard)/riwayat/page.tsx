@@ -44,7 +44,15 @@ export default async function RiwayatPage({
   if (sp.status === "DITOLAK" || sp.status === "SELESAI") {
     where.status = sp.status as RequestStatus;
   }
-  if (sp.serviceType && ["KARTU_KELUARGA", "AKTE_KEMATIAN", "AKTE_KELAHIRAN"].includes(sp.serviceType)) {
+  const validServiceTypes: ServiceType[] = [
+    "KARTU_KELUARGA",
+    "KK_BARCODE",
+    "KK_PISAH",
+    "KK_TAMBAH_ANGGOTA",
+    "AKTE_KEMATIAN",
+    "AKTE_KELAHIRAN",
+  ];
+  if (sp.serviceType && validServiceTypes.includes(sp.serviceType as ServiceType)) {
     where.serviceType = sp.serviceType as ServiceType;
   }
   if (sp.q) {
@@ -109,9 +117,12 @@ export default async function RiwayatPage({
             className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm text-ink outline-none focus:border-ink"
           >
             <option value="">Semua</option>
-            <option value="KARTU_KELUARGA">Kartu Keluarga</option>
+            <option value="KK_BARCODE">KK Barcode</option>
+            <option value="KK_PISAH">Pisah KK (Pasangan Baru Menikah)</option>
+            <option value="KK_TAMBAH_ANGGOTA">Tambah Anggota Keluarga (Anak)</option>
             <option value="AKTE_KEMATIAN">Akte Kematian</option>
             <option value="AKTE_KELAHIRAN">Akte Kelahiran</option>
+            <option value="KARTU_KELUARGA">Kartu Keluarga (lama)</option>
           </select>
         </div>
         <div className="flex flex-col gap-1">

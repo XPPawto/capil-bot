@@ -6,7 +6,7 @@ import { config } from "../config";
 import { logger } from "../logger";
 import { decryptBuffer } from "../media/fileEncryption";
 import { STATUS_LABEL } from "./statusLabel";
-import { loadRequirementsSnapshot } from "./requirements";
+import { loadRequirementsSnapshot, requirementsStatusListText } from "./requirements";
 import type { RequirementSnapshotItem, UploadedDocDraft } from "./types";
 
 export interface FixRejectedContext {
@@ -106,18 +106,11 @@ export async function loadFixRejectedContext(
   };
 }
 
-export function fixStatusListText(snapshot: RequirementSnapshotItem[], uploadedDocs: UploadedDocDraft[]): string {
-  const filledIds = new Set(uploadedDocs.map((d) => d.requirementId));
-  return snapshot
-    .map((r, idx) => `${idx + 1}. ${r.name} - ${filledIds.has(r.id) ? "sudah ada" : "*BELUM ADA*"}`)
-    .join("\n");
-}
-
 export function fixIntroText(context: FixRejectedContext): string {
   const reasonLine = context.rejectionReason ? `Alasan ditolak sebelumnya: ${context.rejectionReason}\n\n` : "";
   return (
     `Baik, mari perbaiki pengajuan *${context.oldTicketNumber}*.\n\n${reasonLine}` +
-    `Syarat yang sudah pernah Anda kirim otomatis dipakai lagi:\n${fixStatusListText(context.requirementsSnapshot, context.uploadedDocs)}\n\n` +
+    `Syarat yang sudah pernah Anda kirim otomatis dipakai lagi:\n${requirementsStatusListText(context.requirementsSnapshot, context.uploadedDocs)}\n\n` +
     `Ketik *nomor* syarat untuk mengganti/mengisinya (mis. ketik *2*), atau kirim file langsung untuk mengisi syarat yang masih kosong. ` +
     `Kalau semua sudah benar, ketik *lanjut* untuk mengirim ulang pengajuan.`
   );

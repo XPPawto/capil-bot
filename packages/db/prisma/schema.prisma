@@ -8,7 +8,12 @@ datasource db {
 }
 
 enum ServiceType {
+  /// Legacy - dipakai sebelum layanan KK dipecah jadi 3 sub-jenis. Dipertahankan supaya
+  /// pengajuan lama tetap tampil benar; tidak lagi bisa dipilih warga untuk pengajuan baru.
   KARTU_KELUARGA
+  KK_BARCODE
+  KK_PISAH
+  KK_TAMBAH_ANGGOTA
   AKTE_KEMATIAN
   AKTE_KELAHIRAN
 }

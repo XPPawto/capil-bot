@@ -1,20 +1,26 @@
 import fs from "fs";
 import type { WAMessage, WASocket } from "@whiskeysockets/baileys";
+import type { ServiceType } from "@kelurahan/db";
 import { logger } from "../logger";
 import { hasSupportedMedia, MediaRejectedError } from "../media/download";
 import { finalizeRequest } from "../media/finalize";
 import { notifyStaffNewRequest } from "../notify/notifyStaff";
-import { mainMenuText, resolveServiceChoice, serviceLabel } from "./menu";
-import { MESSAGES, startCollectingText } from "./messages";
-import { loadRequirementsSnapshot, nextPendingRequirement, requirementsListText } from "./requirements";
+import { kkSubmenuText, mainMenuText, resolveKkSubmenuChoice, resolveServiceChoice, serviceLabel } from "./menu";
+import { MESSAGES, reviewCompleteText, serviceSelectedText, startCollectingText } from "./messages";
+import {
+  loadRequirementsSnapshot,
+  nextPendingRequirement,
+  requirementsListText,
+  requirementsStatusListText,
+} from "./requirements";
 import { intakeDocument } from "./documentIntake";
 import { logInboundIfActiveRequest } from "./messageLog";
-import { fixIntroText, fixStatusListText, loadFixRejectedContext } from "./fixRejected";
+import { fixIntroText, loadFixRejectedContext } from "./fixRejected";
 import { expirePendingRating, findPendingRating, submitRating } from "./rating";
 import { selfCancelRequest } from "./selfCancel";
 import { buildStatusReport } from "./statusReport";
 import { loadConversation, resetConversation, saveConversation } from "./store";
-import type { ConversationContext, UploadedDocDraft } from "./types";
+import type { ConversationContext, LoadedConversation, UploadedDocDraft } from "./types";
 import { isWithinWorkingHours, WORKING_HOURS_NOTE } from "./workingHours";
 import { humanSendMessage } from "../wa/humanSend";
 
@@ -26,6 +32,46 @@ async function cleanupTempFiles(docs: UploadedDocDraft[]): Promise<void> {
 
 async function reply(sock: WASocket, waJid: string, text: string): Promise<void> {
   await humanSendMessage(sock, waJid, { text });
+}
+
+/**
+ * Dipanggil begitu layanan (atau sub-jenis KK) dipilih - tampilkan daftar syarat DULU,
+ * sebelum menanyakan nama pemohon. Supaya warga tahu apa yang perlu disiapkan sebelum
+ * "berkomitmen" mengetik nama; kalau ternyata belum siap, tinggal ketik *batal*.
+ */
+async function offerServiceRequirements(
+  sock: WASocket,
+  waJid: string,
+  conv: LoadedConversation,
+  serviceType: ServiceType
+): Promise<void> {
+  const snapshot = await loadRequirementsSnapshot(serviceType);
+  if (snapshot.length === 0) {
+    await resetConversation(waJid);
+    await reply(sock, waJid, MESSAGES.noRequirementsConfigured);
+    return;
+  }
+  conv.step = "AWAIT_NAME";
+  conv.requirementsSnapshot = snapshot;
+  conv.context = { serviceType, uploadedDocs: [] };
+  await saveConversation(conv);
+  await reply(sock, waJid, serviceSelectedText(serviceLabel(serviceType), requirementsListText(snapshot)));
+}
+
+/**
+ * Dipanggil begitu semua syarat sudah terkumpul - jangan langsung finalisasi, tampilkan
+ * dulu ringkasan supaya warga bisa cek ulang / ganti salah satu file sebelum benar-benar
+ * terkirim ke petugas. Step REVIEWING ini juga dipakai jalur "perbaiki <tiket>" (lihat
+ * fixIntroText) - keduanya berujung ke interaksi tinjau-ulang yang sama persis.
+ */
+async function enterReviewing(sock: WASocket, waJid: string, conv: LoadedConversation): Promise<void> {
+  conv.step = "REVIEWING";
+  await saveConversation(conv);
+  await reply(
+    sock,
+    waJid,
+    reviewCompleteText(requirementsStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs))
+  );
 }
 
 export async function handleConversationMessage(
@@ -58,7 +104,7 @@ export async function handleConversationMessage(
     }
     const conv = await loadConversation(waJid);
     await cleanupTempFiles(conv.context.uploadedDocs);
-    conv.step = "FIXING_REJECTED";
+    conv.step = "REVIEWING";
     conv.requirementsSnapshot = result.context.requirementsSnapshot;
     conv.context = {
       serviceType: result.context.serviceType,
@@ -124,10 +170,28 @@ export async function handleConversationMessage(
       await reply(sock, waJid, mainMenuText());
       return;
     }
-    conv.step = "AWAIT_NAME";
-    conv.context = { serviceType: choice.serviceType, uploadedDocs: [] };
-    await saveConversation(conv);
-    await reply(sock, waJid, MESSAGES.askName);
+
+    if (choice.serviceType === null) {
+      // Kartu Keluarga dipilih - keperluannya beda-beda (barcode/pisah KK/tambah anggota),
+      // syaratnya juga jauh berbeda, jadi tanya dulu sebelum lanjut ke nama pemohon.
+      conv.step = "AWAIT_KK_SUBTYPE";
+      conv.context = { uploadedDocs: [] };
+      await saveConversation(conv);
+      await reply(sock, waJid, kkSubmenuText());
+      return;
+    }
+
+    await offerServiceRequirements(sock, waJid, conv, choice.serviceType);
+    return;
+  }
+
+  if (conv.step === "AWAIT_KK_SUBTYPE") {
+    const choice = text ? resolveKkSubmenuChoice(text) : undefined;
+    if (!choice) {
+      await reply(sock, waJid, kkSubmenuText());
+      return;
+    }
+    await offerServiceRequirements(sock, waJid, conv, choice.serviceType);
     return;
   }
 
@@ -137,17 +201,10 @@ export async function handleConversationMessage(
       await reply(sock, waJid, MESSAGES.invalidName);
       return;
     }
-    const snapshot = await loadRequirementsSnapshot(conv.context.serviceType!);
-    if (snapshot.length === 0) {
-      await resetConversation(waJid);
-      await reply(sock, waJid, MESSAGES.noRequirementsConfigured);
-      return;
-    }
     conv.context.applicantName = name;
-    conv.requirementsSnapshot = snapshot;
     conv.step = "COLLECTING_DOCS";
     await saveConversation(conv);
-    await reply(sock, waJid, startCollectingText(requirementsListText(snapshot), snapshot[0].name));
+    await reply(sock, waJid, startCollectingText(conv.requirementsSnapshot[0].name));
     return;
   }
 
@@ -156,8 +213,8 @@ export async function handleConversationMessage(
     const pending = nextPendingRequirement(conv.requirementsSnapshot, uploadedIds);
 
     if (!pending) {
-      // Sudah lengkap tapi entah kenapa belum difinalisasi - jaga-jaga, jangan macet.
-      await finalizeAndReply(sock, waJid, waNumber, conv);
+      // Sudah lengkap tapi entah kenapa belum masuk tinjau-ulang - jaga-jaga, jangan macet.
+      await enterReviewing(sock, waJid, conv);
       return;
     }
 
@@ -185,7 +242,7 @@ export async function handleConversationMessage(
       );
 
       if (!stillPending) {
-        await finalizeAndReply(sock, waJid, waNumber, conv);
+        await enterReviewing(sock, waJid, conv);
       } else {
         await reply(
           sock,
@@ -204,7 +261,7 @@ export async function handleConversationMessage(
     return;
   }
 
-  if (conv.step === "FIXING_REJECTED") {
+  if (conv.step === "REVIEWING") {
     const filledIds = conv.context.uploadedDocs.map((d) => d.requirementId);
     const missing = conv.requirementsSnapshot.filter((r) => !filledIds.includes(r.id));
 
@@ -236,8 +293,8 @@ export async function handleConversationMessage(
         await reply(
           sock,
           waJid,
-          `Semua syarat sudah lengkap.\n\n${fixStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs)}\n\n` +
-            `Ketik *lanjut* untuk mengirim ulang pengajuan, atau ketik nomor syarat yang mau diganti.`
+          `Semua syarat sudah lengkap.\n\n${requirementsStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs)}\n\n` +
+            `Ketik *lanjut* untuk mengirim pengajuan, atau ketik nomor syarat yang mau diganti.`
         );
         return;
       }
@@ -261,8 +318,8 @@ export async function handleConversationMessage(
         await reply(
           sock,
           waJid,
-          `Syarat *${targetItem.name}* sudah diperbarui.\n\n${fixStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs)}\n\n` +
-            `Ketik nomor syarat lain untuk mengganti, atau *lanjut* untuk mengirim ulang pengajuan.`
+          `Syarat *${targetItem.name}* sudah diperbarui.\n\n${requirementsStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs)}\n\n` +
+            `Ketik nomor syarat lain untuk mengganti, atau *lanjut* untuk mengirim pengajuan.`
         );
       } catch (err) {
         if (err instanceof MediaRejectedError) {
@@ -278,7 +335,7 @@ export async function handleConversationMessage(
     await reply(
       sock,
       waJid,
-      `${fixStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs)}\n\n` +
+      `${requirementsStatusListText(conv.requirementsSnapshot, conv.context.uploadedDocs)}\n\n` +
         `Ketik nomor syarat yang mau diganti, atau *lanjut* kalau semua sudah benar.`
     );
     return;

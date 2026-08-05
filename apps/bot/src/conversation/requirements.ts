@@ -25,7 +25,13 @@ export async function loadRequirementsSnapshot(serviceType: ServiceType): Promis
 /** Dipanggil sekali saat bot menyala - isi cache lebih dulu supaya warga pertama yang
  * buka menu tidak ikut menanggung query MySQL (langsung dapat cache hit). */
 export async function warmRequirementsCache(): Promise<void> {
-  const serviceTypes: ServiceType[] = ["KARTU_KELUARGA", "AKTE_KEMATIAN", "AKTE_KELAHIRAN"];
+  const serviceTypes: ServiceType[] = [
+    "KK_BARCODE",
+    "KK_PISAH",
+    "KK_TAMBAH_ANGGOTA",
+    "AKTE_KEMATIAN",
+    "AKTE_KELAHIRAN",
+  ];
   await Promise.all(serviceTypes.map((s) => loadRequirementsSnapshot(s)));
 }
 
@@ -38,4 +44,17 @@ export function nextPendingRequirement(
   uploadedRequirementIds: number[]
 ): RequirementSnapshotItem | undefined {
   return snapshot.find((r) => !uploadedRequirementIds.includes(r.id));
+}
+
+/** Daftar bernomor dengan status "sudah ada"/"BELUM ADA" per syarat - dipakai baik saat
+ * meninjau pengajuan yang baru selesai dikumpulkan (sebelum dikirim) maupun saat memperbaiki
+ * pengajuan yang ditolak, supaya keduanya punya tampilan tinjau-ulang yang konsisten. */
+export function requirementsStatusListText(
+  snapshot: RequirementSnapshotItem[],
+  uploadedDocs: { requirementId: number }[]
+): string {
+  const filledIds = new Set(uploadedDocs.map((d) => d.requirementId));
+  return snapshot
+    .map((r, idx) => `${idx + 1}. ${r.name} - ${filledIds.has(r.id) ? "sudah ada" : "*BELUM ADA*"}`)
+    .join("\n");
 }

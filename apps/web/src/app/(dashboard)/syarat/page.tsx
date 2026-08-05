@@ -2,7 +2,15 @@ import type { ServiceType } from "@kelurahan/db";
 import { serviceLabel } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 
-const SERVICE_TYPES: ServiceType[] = ["KARTU_KELUARGA", "AKTE_KEMATIAN", "AKTE_KELAHIRAN"];
+// KARTU_KELUARGA (legacy) sengaja tidak ditampilkan di sini - sudah dipecah jadi 3
+// sub-jenis, tidak perlu dikelola lagi lewat halaman ini.
+const SERVICE_TYPES: ServiceType[] = [
+  "KK_BARCODE",
+  "KK_PISAH",
+  "KK_TAMBAH_ANGGOTA",
+  "AKTE_KEMATIAN",
+  "AKTE_KELAHIRAN",
+];
 
 export default async function SyaratPage({
   searchParams,

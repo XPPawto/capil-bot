@@ -5,7 +5,15 @@ import { absoluteUrl } from "@/lib/absoluteUrl";
 import { prisma } from "@/lib/prisma";
 import { invalidateRequirementsCache } from "@/lib/redis";
 
-const VALID_SERVICE_TYPES: ServiceType[] = ["KARTU_KELUARGA", "AKTE_KEMATIAN", "AKTE_KELAHIRAN"];
+// KARTU_KELUARGA (legacy) sengaja tidak dimasukkan - sudah dipecah jadi 3 sub-jenis,
+// tidak boleh ada syarat baru ditambahkan ke tipe yang sudah tidak dipakai lagi ini.
+const VALID_SERVICE_TYPES: ServiceType[] = [
+  "KK_BARCODE",
+  "KK_PISAH",
+  "KK_TAMBAH_ANGGOTA",
+  "AKTE_KEMATIAN",
+  "AKTE_KELAHIRAN",
+];
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const guard = await requireAdmin();

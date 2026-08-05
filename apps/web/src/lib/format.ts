@@ -1,7 +1,10 @@
 import type { RequestStatus, ServiceType } from "@kelurahan/db";
 
 const SERVICE_LABELS: Record<ServiceType, string> = {
-  KARTU_KELUARGA: "Kartu Keluarga",
+  KARTU_KELUARGA: "Kartu Keluarga (lama)",
+  KK_BARCODE: "KK Barcode",
+  KK_PISAH: "Pisah KK (Pasangan Baru Menikah)",
+  KK_TAMBAH_ANGGOTA: "Tambah Anggota Keluarga (Anak)",
   AKTE_KEMATIAN: "Akte Kematian",
   AKTE_KELAHIRAN: "Akte Kelahiran",
 };
@@ -29,6 +32,9 @@ const SERVICE_PRIORITY_WEIGHT: Record<ServiceType, number> = {
   AKTE_KEMATIAN: 3,
   AKTE_KELAHIRAN: 2,
   KARTU_KELUARGA: 1,
+  KK_BARCODE: 1,
+  KK_PISAH: 1,
+  KK_TAMBAH_ANGGOTA: 1,
 };
 
 const PRIORITY_LABEL: Record<number, string> = {

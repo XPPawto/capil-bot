@@ -2,6 +2,9 @@ import { prisma, ServiceType } from "@kelurahan/db";
 
 const SERVICE_CODE: Record<ServiceType, string> = {
   KARTU_KELUARGA: "KK",
+  KK_BARCODE: "KKB",
+  KK_PISAH: "KKP",
+  KK_TAMBAH_ANGGOTA: "KKA",
   AKTE_KEMATIAN: "AM",
   AKTE_KELAHIRAN: "AL",
 };

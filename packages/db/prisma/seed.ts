@@ -3,12 +3,24 @@ import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
 
-const DEFAULT_REQUIREMENTS: Record<ServiceType, string[]> = {
-  KARTU_KELUARGA: [
-    "Foto/scan KTP kepala keluarga",
-    "Foto/scan Buku Nikah atau Akta Perkawinan",
-    "Foto/scan Surat Pengantar RT/RW",
-    "Foto/scan Kartu Keluarga lama (jika perubahan data)",
+// KARTU_KELUARGA (legacy) sengaja tidak diseed lagi - sudah dipecah jadi 3 sub-jenis di
+// bawah, tidak bisa dipilih warga untuk pengajuan baru lagi.
+const DEFAULT_REQUIREMENTS: Partial<Record<ServiceType, string[]>> = {
+  KK_BARCODE: ["KK lama asli", "Fotokopi buku nikah", "Formulir F-1.01"],
+  KK_PISAH: [
+    "Formulir F-1.06 (atau F-1.01 sesuai ketentuan Disdukcapil)",
+    "Fotokopi buku nikah",
+    "KK asli suami",
+    "KK asli istri",
+    "SKPWNI (Surat Keterangan Pindah Warga Negara Indonesia) - apabila salah satu pasangan berasal dari luar daerah, PDF atau hasil cetak",
+  ],
+  KK_TAMBAH_ANGGOTA: [
+    "KK asli",
+    "Surat Keterangan Lahir (dari rumah sakit, bidan, atau surat keterangan lurah apabila lahir di rumah)",
+    "Fotokopi buku nikah",
+    "KTP suami",
+    "KTP istri",
+    "KTP saksi (apabila kelahiran terjadi di rumah)",
   ],
   AKTE_KEMATIAN: [
     "Foto/scan Surat Keterangan Kematian dari Rumah Sakit/Puskesmas/Dokter",

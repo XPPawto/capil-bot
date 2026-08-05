@@ -1,7 +1,6 @@
 import { config } from "../config";
 
 export const MESSAGES = {
-  askName: "Baik, silakan ketik nama lengkap pemohon.",
   invalidName: "Nama tidak valid, mohon ketik nama lengkap (minimal 3 karakter).",
   cancelled: "Pengajuan dibatalkan. Ketik *menu* untuk memulai pengajuan baru.",
   unrecognized:
@@ -24,9 +23,29 @@ export const MESSAGES = {
     `Terima kasih atas penilaian Anda (${rating}/5)! Masukan Anda membantu kami meningkatkan layanan.`,
 };
 
-export function startCollectingText(requirementsList: string, firstRequirementName: string): string {
+/**
+ * Ditampilkan begitu layanan (atau sub-jenis KK) dipilih, SEBELUM nama pemohon ditanya -
+ * supaya warga tahu dulu apa saja yang perlu disiapkan sebelum "berkomitmen" mengetik nama.
+ * Kalau ternyata belum siap, tinggal ketik *batal* di sini tanpa harus mengetik nama dulu.
+ */
+export function serviceSelectedText(serviceLabelText: string, requirementsList: string): string {
   return (
-    `Berikut daftar syarat yang perlu disiapkan:\n${requirementsList}\n\n` +
-    `Silakan kirim file (foto atau PDF, maks 10MB) satu per satu, dimulai dari:\n*${firstRequirementName}*`
+    `Anda memilih: *${serviceLabelText}*.\n\nBerikut syarat yang perlu disiapkan:\n${requirementsList}\n\n` +
+    `Kalau sudah siap semua, silakan ketik nama lengkap pemohon untuk memulai pengiriman berkas. ` +
+    `Belum siap? Ketik *batal*, dan kembali kapan saja lewat *menu*.`
+  );
+}
+
+export function startCollectingText(firstRequirementName: string): string {
+  return `Baik. Silakan kirim file (foto atau PDF, maks 10MB) untuk syarat pertama:\n*${firstRequirementName}*`;
+}
+
+/** Ditampilkan begitu semua syarat sudah terkumpul, SEBELUM benar-benar dikirim ke petugas -
+ * warga bisa cek ulang & ganti salah satu file dulu kalau perlu, bukan langsung terkirim. */
+export function reviewCompleteText(statusList: string): string {
+  return (
+    `Semua syarat sudah lengkap:\n${statusList}\n\n` +
+    `Cek dulu, sudah benar semua? Ketik *lanjut* untuk mengirim pengajuan ini, atau ketik nomor syarat ` +
+    `yang ingin diganti dulu sebelum dikirim.`
   );
 }

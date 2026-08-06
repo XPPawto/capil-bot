@@ -1,14 +1,23 @@
-import { extractMessageContent, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
+import { extractMessageContent, proto, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
+import type { InboxChannel } from "@kelurahan/db";
 import { logger } from "../logger";
 import { handleConversationMessage } from "./handler";
 import { runExclusive } from "./mutex";
 import { checkRateLimit } from "./rateLimit";
 import { humanSendMessage } from "../wa/humanSend";
 import { isHumanTakeoverActive } from "./humanTakeover";
-import { logInboundIfActiveRequest, logInboxMessage, logOutboundFromDevice, type GroupMeta } from "./messageLog";
+import {
+  applyMessageEdit,
+  logInboundIfActiveRequest,
+  logInboxMessage,
+  logOutboundFromDevice,
+  resolveKnownWaNumber,
+  type GroupMeta,
+} from "./messageLog";
 import { handleVoiceNote } from "../media/voiceNote";
 import { logInboxMediaIfPresent } from "../media/inboxMedia";
 import { getGroupName } from "../wa/groupNameCache";
+import { getChannelName } from "../wa/channelNameCache";
 import { wasSentByDashboard } from "../wa/sentMessageTracker";
 
 interface MessagesUpsertPayload {
@@ -89,14 +98,103 @@ export function extractInboxText(msg: WAMessage): string | undefined {
   return undefined;
 }
 
+/**
+ * Nomor HP untuk pesan fromMe/balasan-dari-HP (kita yang MENGIRIM, bukan menerima) - beda
+ * dari extractWaNumber yang mengandalkan senderPn (itu cuma ada untuk pesan MASUK). Kalau
+ * remoteJid warga di-mask WhatsApp sebagai "@lid", jid.split("@")[0] menghasilkan ID
+ * internal WhatsApp yang panjang & bukan nomor HP asli (bug yang bikin /admin-xpawto
+ * menampilkan angka aneh) - di sini diutamakan nomor yang SUDAH PERNAH terbukti benar dari
+ * histori percakapan (resolveKnownWaNumber), baru kalau belum ada histori sama sekali
+ * (warga belum pernah chat, admin chat duluan) dicoba onWhatsApp() sebagai upaya terakhir.
+ */
+export async function resolveWaNumberForOutbound(sock: WASocket, jid: string): Promise<string> {
+  const known = await resolveKnownWaNumber(jid);
+  if (known) return known;
+
+  if (jid.endsWith("@lid")) {
+    try {
+      const results = await sock.onWhatsApp(jid);
+      const resolvedJid = results?.[0]?.jid;
+      if (resolvedJid && resolvedJid.endsWith("@s.whatsapp.net")) {
+        return resolvedJid.split("@")[0];
+      }
+    } catch (err) {
+      logger.warn({ err, jid }, "Gagal resolusi nomor asli lewat onWhatsApp, pakai fallback JID mentah");
+    }
+  }
+
+  return jid.split("@")[0];
+}
+
+/**
+ * Kalau pesan ini adalah EDIT (WhatsApp mengirim protocolMessage tipe MESSAGE_EDIT saat
+ * siapa pun - warga atau kita sendiri - mengedit pesan yang sudah terkirim sebelumnya),
+ * cari baris yang tepat lewat waMessageId (ID pesan ASLI, dari protocolMessage.key.id) dan
+ * update isinya DI TEMPAT lewat applyMessageEdit - HANYA baris itu yang tersentuh, tidak
+ * ada baris lain yang ikut berubah. Kembalikan true kalau ini memang event edit (supaya
+ * pemanggil tahu harus berhenti di sini, bukan diproses lagi sebagai pesan baru biasa).
+ */
+export async function handleMessageEditIfPresent(
+  msg: WAMessage,
+  jid: string,
+  channel: InboxChannel,
+  extraAccountId?: number
+): Promise<boolean> {
+  const protocolMsg = msg.message?.protocolMessage;
+  if (!protocolMsg) return false;
+
+  // Log diagnostik sementara - protocolMessage dipakai WA untuk banyak jenis event (revoke,
+  // reaksi, sync, dst), bukan cuma edit. Kalau ternyata edit tidak konsisten kedeteksi,
+  // ini membantu lihat tipe apa yang sungguh datang tanpa perlu menebak-nebak lagi.
+  if (protocolMsg.type !== proto.Message.ProtocolMessage.Type.MESSAGE_EDIT) {
+    logger.info({ jid, protocolType: protocolMsg.type }, "protocolMessage diterima, bukan MESSAGE_EDIT - diabaikan");
+    return false;
+  }
+
+  const originalId = protocolMsg.key?.id;
+  if (!originalId) {
+    logger.warn({ jid }, "Event MESSAGE_EDIT diterima tapi tidak ada key.id target - diabaikan");
+    return true;
+  }
+
+  const editedContent = extractMessageContent(protocolMsg.editedMessage ?? undefined) ?? protocolMsg.editedMessage;
+  const newText = editedContent?.conversation ?? editedContent?.extendedTextMessage?.text;
+  if (!newText) {
+    logger.warn({ jid, originalId, editedContent }, "Event MESSAGE_EDIT diterima tapi tidak ada teks baru yang dikenali");
+    return true;
+  }
+
+  try {
+    const applied = await applyMessageEdit(jid, originalId, newText, channel, extraAccountId);
+    logger.info({ jid, originalId, channel, extraAccountId, applied, newText }, "Edit pesan diproses");
+  } catch (err) {
+    logger.error({ err, jid, originalId }, "Gagal menerapkan edit pesan");
+  }
+  return true;
+}
+
 export async function handleIncomingMessages(sock: WASocket, payload: MessagesUpsertPayload): Promise<void> {
-  if (payload.type !== "notify") return;
+  // Event edit pesan (protocolMessage) kadang datang dengan payload.type "append", bukan
+  // "notify" - kalau langsung berhenti di sini untuk apa pun selain "notify", semua edit
+  // akan diam-diam terlewat tanpa diproses sama sekali. "notify"/"append" tetap diperiksa
+  // untuk kemungkinan edit di bawah; pemrosesan pesan BARU biasa (alur bot dst) tetap
+  // dibatasi cuma untuk "notify" saja (lihat pengecekan kedua di dalam loop).
+  if (payload.type !== "notify" && payload.type !== "append") return;
 
   for (const msg of payload.messages) {
     const jid = msg.key.remoteJid;
     if (!jid) continue;
-    if (jid === "status@broadcast" || jid.endsWith("@broadcast")) continue;
+    // "@newsletter" = Channel WhatsApp (siaran satu-arah, bukan percakapan dengan orang
+    // tertentu) - tidak relevan buat kotak masuk, diskip sama seperti broadcast/status.
+    if (jid === "status@broadcast" || jid.endsWith("@broadcast") || jid.endsWith("@newsletter")) continue;
     if (!msg.message) continue;
+
+    if (await handleMessageEditIfPresent(msg, jid, "SERVICE")) continue;
+
+    // Selain edit (ditangani di atas), sisa alur di bawah ini HANYA untuk payload "notify"
+    // (pesan baru sungguhan) - "append" bisa berisi event lain yang bukan pesan baru dan
+    // salah kalau ikut diproses sebagai input warga/alur bot.
+    if (payload.type !== "notify") continue;
 
     // ---- Pesan yang KITA kirim sendiri (fromMe) ----
     // humanSendMessage (wa/humanSend.ts) menandai SETIAP pesan yang dikirim lewat kode
@@ -111,14 +209,14 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
       if (wasSentByDashboard(msg.key.id)) continue;
 
       const isGroup = jid.endsWith("@g.us");
-      const waNumber = jid.split("@")[0];
+      const waNumber = isGroup ? jid.split("@")[0] : await resolveWaNumberForOutbound(sock, jid);
       const text = extractInboxText(msg);
       const group: GroupMeta | undefined = isGroup
         ? { isGroup: true, groupName: await getGroupName(sock, jid) }
         : undefined;
 
       try {
-        if (text) await logOutboundFromDevice(jid, waNumber, text, "SERVICE", group);
+        if (text) await logOutboundFromDevice(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined);
         await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group, "OUTBOUND");
       } catch (err) {
         logger.error({ err, jid }, "Gagal mencatat balasan dari HP nomor bot");
@@ -147,10 +245,28 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
       };
 
       try {
-        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group);
+        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined);
         await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group);
       } catch (err) {
         logger.error({ err, jid }, "Gagal mencatat pesan grup ke kotak masuk");
+      }
+      continue;
+    }
+
+    // ---- Channel WA ----
+    // Siaran satu arah dari pengelola channel, bukan percakapan dua arah - dicatat pasif
+    // sama seperti grup (supaya tetap kelihatan di /admin-xpawto kalau nomor bot kebetulan
+    // mengikuti channel tertentu), tanpa alur bot apa pun (tidak ada yang perlu dijawab).
+    if (jid.endsWith("@newsletter")) {
+      const text = extractInboxText(msg);
+      const waNumber = jid.split("@")[0];
+      const group: GroupMeta = { isGroup: false, isChannel: true, groupName: await getChannelName(sock, jid) };
+
+      try {
+        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined);
+        await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group);
+      } catch (err) {
+        logger.error({ err, jid }, "Gagal mencatat postingan channel ke kotak masuk");
       }
       continue;
     }
@@ -179,7 +295,7 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
     // Dicatat lebih dulu, terlepas dari state/takeover - dasar halaman "Pesan Masuk" yang
     // menampilkan SEMUA nomor yang pernah chat bot, bukan cuma yang punya pengajuan aktif.
     if (inboxText) {
-      logInboxMessage(jid, waNumber, inboxText, "SERVICE", contact).catch((err) =>
+      logInboxMessage(jid, waNumber, inboxText, "SERVICE", contact, undefined, msg.key.id ?? undefined).catch((err) =>
         logger.error({ err, jid }, "Gagal mencatat pesan ke kotak masuk")
       );
     }

@@ -297,16 +297,27 @@ model InboxMessage {
   // senderNumber/senderName menyimpan siapa yang benar-benar mengirim pesan itu di dalam
   // grup, karena satu "percakapan" grup berisi banyak pengirim berbeda.
   isGroup            Boolean          @default(false)
+  // Channel WA (JID diakhiri ...@newsletter) - siaran satu arah dari pengelola channel,
+  // BUKAN percakapan dua arah (tidak ada "sender" perorangan, tidak bisa dibalas). Nama
+  // channel-nya dipakai field groupName yang sama (generik "nama tampilan non-1:1").
+  isChannel          Boolean          @default(false)
   groupName          String?
   senderNumber       String?
   senderName         String?
   adminId            Int?
   admin              Admin?           @relation(fields: [adminId], references: [id])
   createdAt          DateTime         @default(now())
+  // ID pesan asli dari WhatsApp (msg.key.id) - dicatat supaya kalau pengirimnya MENGEDIT
+  // pesan itu belakangan, kita bisa cari baris yang tepat ini dan update isinya di tempat,
+  // bukan bikin baris baru. editedAt diisi cuma kalau pesan ini pernah diedit (null berarti
+  // belum pernah) - dipakai UI untuk kasih tanda "diedit" di pesan itu.
+  waMessageId        String?
+  editedAt           DateTime?
 
   @@index([waJid])
   @@index([channel])
   @@index([extraAccountId])
+  @@index([waMessageId])
   @@index([createdAt])
 }
 

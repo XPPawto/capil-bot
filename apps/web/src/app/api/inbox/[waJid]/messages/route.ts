@@ -14,6 +14,7 @@ interface ThreadMessage {
   attachmentMimeType: string | null;
   senderName: string | null;
   senderNumber: string | null;
+  editedAt: string | null;
 }
 
 function channelFrom(value: string | null): InboxChannel {
@@ -78,6 +79,7 @@ export async function GET(
       attachmentMimeType: m.attachmentMimeType ?? null,
       senderName: m.senderName ?? null,
       senderNumber: m.senderNumber ?? null,
+      editedAt: m.editedAt ? m.editedAt.toISOString() : null,
     })),
     ...requestRows.map((m) => ({
       id: `r${m.id}`,
@@ -89,6 +91,7 @@ export async function GET(
       attachmentMimeType: m.attachmentMimeType ?? null,
       senderName: null,
       senderNumber: null,
+      editedAt: null,
     })),
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
@@ -122,12 +125,23 @@ export async function POST(
     }
   }
 
-  // waNumber diambil dari sumber mana pun yang sudah ada catatannya untuk waJid ini.
-  const existingInbox = await prisma.inboxMessage.findFirst({ where: { waJid: decodedWaJid } });
-  const existingRequest = existingInbox
-    ? null
-    : await prisma.request.findFirst({ where: { waJid: decodedWaJid } });
-  const waNumber = existingInbox?.waNumber ?? existingRequest?.waNumber;
+  // waNumber diutamakan dari pesan MASUK (selalu benar, lewat senderPn) - kalau diambil
+  // dari baris apa pun tanpa pilih-pilih, bisa kejaring baris balasan-dari-HP lama yang
+  // JID-nya di-mask WhatsApp ("@lid") dan waNumber-nya keliru (ID internal, bukan nomor HP).
+  let waNumber: string | undefined;
+  const inboundInbox = await prisma.inboxMessage.findFirst({
+    where: { waJid: decodedWaJid, direction: "INBOUND" },
+    orderBy: { createdAt: "desc" },
+  });
+  waNumber = inboundInbox?.waNumber;
+  if (!waNumber) {
+    const existingRequest = await prisma.request.findFirst({ where: { waJid: decodedWaJid } });
+    waNumber = existingRequest?.waNumber;
+  }
+  if (!waNumber) {
+    const anyInbox = await prisma.inboxMessage.findFirst({ where: { waJid: decodedWaJid } });
+    waNumber = anyInbox?.waNumber;
+  }
   if (!waNumber) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }

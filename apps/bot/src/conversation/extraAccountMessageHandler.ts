@@ -3,8 +3,15 @@ import { logger } from "../logger";
 import { checkRateLimit } from "./rateLimit";
 import { logInboxMessage, logOutboundFromDevice, type GroupMeta } from "./messageLog";
 import { logInboxMediaIfPresent } from "../media/inboxMedia";
-import { extractInboxText, extractParticipantNumber, extractWaNumber } from "./messageHandler";
+import {
+  extractInboxText,
+  extractParticipantNumber,
+  extractWaNumber,
+  handleMessageEditIfPresent,
+  resolveWaNumberForOutbound,
+} from "./messageHandler";
 import { getGroupName } from "../wa/groupNameCache";
+import { getChannelName } from "../wa/channelNameCache";
 import { wasSentByDashboard } from "../wa/sentMessageTracker";
 
 interface MessagesUpsertPayload {
@@ -16,7 +23,7 @@ interface MessagesUpsertPayload {
  * Akun EKSTRA (bisa lebih dari satu - Akun Kedua, Akun Ketiga, dst, dibedakan lewat
  * `accountId` = ExtraAccount.id) BUKAN bot layanan - tidak ada menu, tidak ada alur
  * pengajuan, tidak ada balasan otomatis apa pun. Tugas handler ini adalah mencatat semua
- * pesan (teks + media, termasuk grup WA yang diikuti akun ini) ke Pesan Masuk
+ * pesan (teks + media, termasuk grup WA & Channel yang diikuti akun ini) ke Pesan Masuk
  * (/admin-xpawto, channel EXTRA) - baik yang masuk dari warga MAUPUN yang dibalas keluar,
  * dari mana pun asalnya (lewat dashboard, atau diketik LANGSUNG dari HP akun ini) - supaya
  * dashboard selalu jadi cerminan utuh percakapan aslinya, bukan cuma separuh yang lewat web.
@@ -36,7 +43,12 @@ export async function handleExtraAccountIncomingMessages(
   payload: MessagesUpsertPayload,
   accountId: number
 ): Promise<void> {
-  if (payload.type !== "notify") return;
+  // Event edit pesan (protocolMessage) kadang datang dengan payload.type "append", bukan
+  // "notify" - kalau langsung berhenti di sini untuk apa pun selain "notify", semua edit
+  // akan diam-diam terlewat tanpa diproses sama sekali. "notify"/"append" tetap diperiksa
+  // untuk kemungkinan edit di bawah; pemrosesan pesan BARU biasa tetap dibatasi cuma untuk
+  // "notify" saja (lihat pengecekan kedua di dalam loop).
+  if (payload.type !== "notify" && payload.type !== "append") return;
 
   for (const msg of payload.messages) {
     const jid = msg.key.remoteJid;
@@ -44,19 +56,30 @@ export async function handleExtraAccountIncomingMessages(
     if (jid === "status@broadcast" || jid.endsWith("@broadcast")) continue;
     if (!msg.message) continue;
 
+    if (await handleMessageEditIfPresent(msg, jid, "EXTRA", accountId)) continue;
+
+    // Selain edit (ditangani di atas), sisa alur di bawah ini HANYA untuk payload "notify"
+    // (pesan baru sungguhan) - "append" bisa berisi event lain yang bukan pesan baru.
+    if (payload.type !== "notify") continue;
+
     const isFromMe = Boolean(msg.key.fromMe);
+    // Channel WA (siaran satu arah dari pengelola ke pengikutnya) tidak pernah punya
+    // balasan yang masuk akal dari kita sebagai pengikut biasa - kalau tetap ada event
+    // fromMe untuk JID channel (jarang, tapi jaga-jaga), lewati saja, tidak dicatat.
+    if (jid.endsWith("@newsletter") && isFromMe) continue;
+
     if (isFromMe) {
       if (wasSentByDashboard(msg.key.id)) continue;
-    } else {
-      // Rate limit cuma relevan untuk pesan MASUK (potensi flooding dari luar) - balasan
-      // yang kita kirim sendiri dari HP tidak boleh ikut ditahan oleh limiter ini.
-      // Dipisah per akun (jid saja tidak cukup unik lintas akun, tapi rate limiter ini
-      // murni anti-flood per lawan bicara - cukup aman dibagi bersama).
+    } else if (!jid.endsWith("@newsletter")) {
+      // Rate limit cuma relevan untuk pesan MASUK personal (potensi flooding dari luar) -
+      // balasan yang kita kirim sendiri dari HP, dan postingan channel (dari pengelolanya,
+      // bukan kita), tidak boleh ikut ditahan limiter ini.
       const rateLimitResult = checkRateLimit(jid);
       if (rateLimitResult === "blocked") continue;
     }
 
     const isGroup = jid.endsWith("@g.us");
+    const isChannel = jid.endsWith("@newsletter");
     const text = extractInboxText(msg);
 
     let waNumber: string;
@@ -75,11 +98,16 @@ export async function handleExtraAccountIncomingMessages(
         senderNumber,
         senderName: isFromMe ? undefined : (msg.pushName ?? undefined),
       };
+    } else if (isChannel) {
+      // Channel tidak punya "nomor" atau pengirim perorangan sama sekali - semua
+      // postingannya dianggap datang dari channel itu sendiri.
+      waNumber = jid.split("@")[0];
+      group = { isGroup: false, isChannel: true, groupName: await getChannelName(sock, jid) };
     } else {
-      waNumber = isFromMe ? jid.split("@")[0] : extractWaNumber(msg, jid);
-      // Bukan grup - senderName di sini berarti nama profil WA lawan bicara itu sendiri
-      // (bukan grup), dipakai supaya daftar Pesan Masuk bisa tampilkan nama, bukan cuma
-      // nomor. Cuma diisi dari pesan MASUK (fromMe = kita, nama kita sendiri tidak relevan).
+      waNumber = isFromMe ? await resolveWaNumberForOutbound(sock, jid) : extractWaNumber(msg, jid);
+      // Bukan grup/channel - senderName di sini berarti nama profil WA lawan bicara itu
+      // sendiri, dipakai supaya daftar Pesan Masuk bisa tampilkan nama, bukan cuma nomor.
+      // Cuma diisi dari pesan MASUK (fromMe = kita, nama kita sendiri tidak relevan).
       if (!isFromMe && msg.pushName) {
         group = { isGroup: false, senderName: msg.pushName };
       }
@@ -90,9 +118,9 @@ export async function handleExtraAccountIncomingMessages(
     try {
       if (text) {
         if (isFromMe) {
-          await logOutboundFromDevice(jid, waNumber, text, "EXTRA", group, accountId);
+          await logOutboundFromDevice(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined);
         } else {
-          await logInboxMessage(jid, waNumber, text, "EXTRA", group, accountId);
+          await logInboxMessage(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined);
         }
       }
       await logInboxMediaIfPresent(sock, msg, jid, waNumber, "EXTRA", group, direction, accountId);

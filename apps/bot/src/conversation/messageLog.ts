@@ -21,8 +21,36 @@ export async function logInboundIfActiveRequest(waJid: string, text: string): Pr
   });
 }
 
+/**
+ * Cari nomor HP asli yang SUDAH PERNAH tercatat benar untuk waJid ini, dari pesan MASUK
+ * (yang selalu diresolusi lewat senderPn - lihat extractWaNumber di messageHandler.ts,
+ * jadi selalu bisa dipercaya), atau dari Request kalau ada. Dipakai KHUSUS untuk kasus
+ * fromMe/balasan-dari-HP (lihat messageHandler.ts & extraAccountMessageHandler.ts): kalau
+ * remoteJid warga itu ternyata di-mask WhatsApp sebagai "@lid" (fitur privasi), sekadar
+ * ambil `jid.split("@")[0]` menghasilkan ID internal WhatsApp yang panjang & tidak masuk
+ * akal (bukan nomor HP sungguhan) - dengan mengutamakan nomor yang sudah pernah terbukti
+ * benar dari histori, tampilan di /admin-xpawto tetap nomor HP yang wajar untuk percakapan
+ * yang sudah ada, meskipun JID mentahnya di-mask.
+ */
+export async function resolveKnownWaNumber(waJid: string): Promise<string | null> {
+  const inbound = await prisma.inboxMessage.findFirst({
+    where: { waJid, direction: "INBOUND" },
+    orderBy: { createdAt: "desc" },
+    select: { waNumber: true },
+  });
+  if (inbound) return inbound.waNumber;
+
+  const req = await prisma.request.findFirst({
+    where: { waJid },
+    orderBy: { createdAt: "desc" },
+    select: { waNumber: true },
+  });
+  return req?.waNumber ?? null;
+}
+
 export interface GroupMeta {
   isGroup: boolean;
+  isChannel?: boolean;
   groupName?: string;
   senderNumber?: string;
   senderName?: string;
@@ -43,7 +71,8 @@ export async function logInboxMessage(
   text: string,
   channel: InboxChannel = "SERVICE",
   group?: GroupMeta,
-  extraAccountId?: number
+  extraAccountId?: number,
+  waMessageId?: string
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -56,9 +85,11 @@ export async function logInboxMessage(
       direction: "INBOUND",
       message: trimmed,
       isGroup: group?.isGroup ?? false,
+      isChannel: group?.isChannel ?? false,
       groupName: group?.groupName,
       senderNumber: group?.senderNumber,
       senderName: group?.senderName,
+      waMessageId,
     },
   });
 }
@@ -76,7 +107,8 @@ export async function logOutboundFromDevice(
   text: string,
   channel: InboxChannel = "EXTRA",
   group?: GroupMeta,
-  extraAccountId?: number
+  extraAccountId?: number,
+  waMessageId?: string
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -89,11 +121,36 @@ export async function logOutboundFromDevice(
       direction: "OUTBOUND",
       message: trimmed,
       isGroup: group?.isGroup ?? false,
+      isChannel: group?.isChannel ?? false,
       groupName: group?.groupName,
       senderNumber: group?.senderNumber,
       senderName: group?.senderName,
+      waMessageId,
     },
   });
+}
+
+/**
+ * Dipanggil kalau WhatsApp mengirim event edit pesan (protocolMessage tipe MESSAGE_EDIT) -
+ * cari baris InboxMessage yang waMessageId-nya PERSIS cocok (satu pesan asli = satu ID unik
+ * dari WhatsApp) lalu update isinya DI TEMPAT. HANYA baris itu yang tersentuh - tidak ada
+ * baris lain yang ikut berubah, dan kalau baris yang dicari tidak ketemu (mis. pesan aslinya
+ * tidak pernah tercatat, atau dari sebelum fitur ini ada), tidak melakukan apa-apa.
+ */
+export async function applyMessageEdit(
+  waJid: string,
+  waMessageId: string,
+  newText: string,
+  channel: InboxChannel,
+  extraAccountId?: number
+): Promise<boolean> {
+  const trimmed = newText.trim();
+  if (!trimmed) return false;
+  const result = await prisma.inboxMessage.updateMany({
+    where: channel === "EXTRA" ? { waJid, waMessageId, channel, extraAccountId } : { waJid, waMessageId, channel },
+    data: { message: trimmed, editedAt: new Date() },
+  });
+  return result.count > 0;
 }
 
 /**

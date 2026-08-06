@@ -46,9 +46,22 @@ export async function POST(
     return NextResponse.json({ error: "too_large" }, { status: 400 });
   }
 
-  const existingInbox = await prisma.inboxMessage.findFirst({ where: { waJid: decodedWaJid } });
-  const existingRequest = existingInbox ? null : await prisma.request.findFirst({ where: { waJid: decodedWaJid } });
-  const waNumber = existingInbox?.waNumber ?? existingRequest?.waNumber;
+  // waNumber diutamakan dari pesan MASUK (selalu benar, lewat senderPn) - lihat komentar
+  // serupa di ../messages/route.ts untuk alasan urutan prioritasnya.
+  let waNumber: string | undefined;
+  const inboundInbox = await prisma.inboxMessage.findFirst({
+    where: { waJid: decodedWaJid, direction: "INBOUND" },
+    orderBy: { createdAt: "desc" },
+  });
+  waNumber = inboundInbox?.waNumber;
+  if (!waNumber) {
+    const existingRequest = await prisma.request.findFirst({ where: { waJid: decodedWaJid } });
+    waNumber = existingRequest?.waNumber;
+  }
+  if (!waNumber) {
+    const anyInbox = await prisma.inboxMessage.findFirst({ where: { waJid: decodedWaJid } });
+    waNumber = anyInbox?.waNumber;
+  }
   if (!waNumber) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }

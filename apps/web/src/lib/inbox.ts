@@ -9,6 +9,7 @@ export interface InboxConversation {
   lastAt: string;
   takeoverActive: boolean;
   isGroup: boolean;
+  isChannel: boolean;
   groupName: string | null;
   lastSenderName: string | null;
   /** Nama profil WA lawan bicara (bukan grup) - null kalau belum pernah terekam. */
@@ -65,6 +66,7 @@ export async function getInboxConversations(
       lastDirection: "INBOUND" | "OUTBOUND";
       lastAt: Date;
       isGroup: boolean;
+      isChannel: boolean;
       groupName: string | null;
       lastSenderName: string | null;
     }
@@ -76,9 +78,21 @@ export async function getInboxConversations(
   // jadi kemunculan pertama per waJid otomatis yang paling baru.
   const contactNameByWaJid = new Map<string, string>();
 
+  // Nomor HP yang DITAMPILKAN juga dilacak terpisah dari "pesan terakhir", dengan alasan
+  // yang sama seperti nama kontak: kalau pesan terakhirnya balasan KITA yang diketik
+  // langsung dari HP ke warga yang JID-nya di-mask WhatsApp ("@lid"), waNumber di baris
+  // itu bisa jadi ID internal WhatsApp yang panjang & bukan nomor HP asli (celah yang sudah
+  // diperbaiki di sisi bot untuk data baru, tapi baris lama yang terlanjur salah masih ada).
+  // Pesan MASUK selalu benar (lewat senderPn) - diutamakan kalau ada, baru fallback ke pesan
+  // terakhir apa pun kalau warga itu belum pernah membalas sama sekali.
+  const bestWaNumberByWaJid = new Map<string, string>();
+
   for (const m of recentInbox) {
-    if (!m.isGroup && m.direction === "INBOUND" && m.senderName && !contactNameByWaJid.has(m.waJid)) {
+    if (!m.isGroup && !m.isChannel && m.direction === "INBOUND" && m.senderName && !contactNameByWaJid.has(m.waJid)) {
       contactNameByWaJid.set(m.waJid, m.senderName);
+    }
+    if (m.direction === "INBOUND" && !bestWaNumberByWaJid.has(m.waJid)) {
+      bestWaNumberByWaJid.set(m.waJid, m.waNumber);
     }
 
     const existing = latestByWaJid.get(m.waJid);
@@ -89,12 +103,19 @@ export async function getInboxConversations(
       lastDirection: m.direction,
       lastAt: m.createdAt,
       isGroup: m.isGroup,
+      isChannel: m.isChannel,
       groupName: m.groupName,
       lastSenderName: m.senderName,
     });
   }
 
   for (const r of requestsWithMessages) {
+    // Request.waNumber sendiri (bukan cuma pesannya) juga sumber yang bisa dipercaya -
+    // diisi lewat alur intake bot yang resolusinya sudah benar sejak awal.
+    if (!bestWaNumberByWaJid.has(r.waJid)) {
+      bestWaNumberByWaJid.set(r.waJid, r.waNumber);
+    }
+
     const last = r.messages[0];
     if (!last) continue;
     const existing = latestByWaJid.get(r.waJid);
@@ -105,6 +126,7 @@ export async function getInboxConversations(
       lastDirection: last.direction,
       lastAt: last.createdAt,
       isGroup: false,
+      isChannel: false,
       groupName: null,
       lastSenderName: null,
     });
@@ -113,12 +135,13 @@ export async function getInboxConversations(
   const conversations: InboxConversation[] = [...latestByWaJid.entries()]
     .map(([waJid, v]) => ({
       waJid,
-      waNumber: v.waNumber,
+      waNumber: bestWaNumberByWaJid.get(waJid) ?? v.waNumber,
       lastMessage: v.lastMessage,
       lastDirection: v.lastDirection,
       lastAt: v.lastAt.toISOString(),
       takeoverActive: false,
       isGroup: v.isGroup,
+      isChannel: v.isChannel,
       groupName: v.groupName,
       lastSenderName: v.lastSenderName,
       contactName: contactNameByWaJid.get(waJid) ?? null,

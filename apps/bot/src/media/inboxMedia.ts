@@ -41,7 +41,8 @@ export async function logInboxMediaIfPresent(
   direction: "INBOUND" | "OUTBOUND" = "INBOUND",
   extraAccountId?: number
 ): Promise<void> {
-  const m = extractMessageContent(msg.message ?? undefined) ?? msg.message;
+  const raw = msg.message;
+  const m = extractMessageContent(raw ?? undefined) ?? raw;
   if (!m) return;
   const isImage = Boolean(m.imageMessage);
   const isDocument = Boolean(m.documentMessage);
@@ -62,7 +63,18 @@ export async function logInboxMediaIfPresent(
   // protokolnya), tapi menyimpannya permanen di sini akan melanggar niat privasi
   // pengirimnya - cukup dicatat sebagai catatan teks biasa, supaya petugas tahu ada
   // kiriman semacam itu tanpa ikut menyimpan isinya.
-  if ((isImage && m.imageMessage?.viewOnce) || (isVideo && m.videoMessage?.viewOnce)) {
+  //
+  // WA menandai "sekali lihat" dengan DUA cara berbeda tergantung versi klien pengirim:
+  // (a) flag viewOnce=true langsung di imageMessage/videoMessage-nya sendiri (unwrap-nya
+  // sudah dibuka extractMessageContent di atas), ATAU (b) dibungkus wrapper khusus
+  // (viewOnceMessage/viewOnceMessageV2/viewOnceMessageV2Extension) yang statusnya cuma
+  // kelihatan di objek MENTAH sebelum dibuka bungkusnya - makanya dicek dari `raw`, bukan
+  // `m`. Kalau cuma cek satu cara saja, sebagian pesan sekali-lihat lolos tak terdeteksi
+  // dan berakhir didownload seperti foto biasa (atau malah tidak tercatat sama sekali kalau
+  // salah kenali - ini bug yang baru diperbaiki).
+  const isViewOnceWrapper = Boolean(raw?.viewOnceMessage || raw?.viewOnceMessageV2 || raw?.viewOnceMessageV2Extension);
+  const isViewOnceFlag = Boolean((isImage && m.imageMessage?.viewOnce) || (isVideo && m.videoMessage?.viewOnce));
+  if ((isImage || isVideo) && (isViewOnceWrapper || isViewOnceFlag)) {
     const label = isImage ? "[Foto sekali lihat - tidak disimpan]" : "[Video sekali lihat - tidak disimpan]";
     try {
       await prisma.inboxMessage.create({
@@ -74,6 +86,7 @@ export async function logInboxMediaIfPresent(
           direction,
           message: label,
           isGroup: group?.isGroup ?? false,
+          isChannel: group?.isChannel ?? false,
           groupName: group?.groupName,
           senderNumber: group?.senderNumber,
           senderName: group?.senderName,
@@ -142,6 +155,7 @@ export async function logInboxMediaIfPresent(
         attachmentPath: path.join("_inbox", safeJid, fileName),
         attachmentMimeType: realMimeType,
         isGroup: group?.isGroup ?? false,
+        isChannel: group?.isChannel ?? false,
         groupName: group?.groupName,
         senderNumber: group?.senderNumber,
         senderName: group?.senderName,

@@ -2,7 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relativeDuration } from "@/lib/format";
-import { IconArrowLeft, IconChat, IconClose, IconDocument, IconPaperclip, IconSearch, IconSend, IconUsers } from "@/components/icons";
+import {
+  IconArrowLeft,
+  IconChat,
+  IconClose,
+  IconDocument,
+  IconMegaphone,
+  IconPaperclip,
+  IconSearch,
+  IconSend,
+  IconUsers,
+} from "@/components/icons";
 
 type Channel = "SERVICE" | "EXTRA";
 /** "SERVICE" = nomor bot layanan; angka = id salah satu akun ekstra (Akun Kedua, Ketiga, dst). */
@@ -16,6 +26,7 @@ interface Conversation {
   lastAt: string;
   takeoverActive: boolean;
   isGroup: boolean;
+  isChannel: boolean;
   groupName: string | null;
   lastSenderName: string | null;
   contactName: string | null;
@@ -31,6 +42,7 @@ interface MessageItem {
   attachmentMimeType: string | null;
   senderName: string | null;
   senderNumber: string | null;
+  editedAt: string | null;
 }
 
 interface ExtraAccountSummary {
@@ -746,22 +758,32 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                         active ? "bg-surface text-pastel-blue-ink" : "bg-canvas text-ink-muted"
                       }`}
                     >
-                      {c.isGroup ? <IconUsers className="h-5 w-5" /> : initialsOf(c.waNumber)}
+                      {c.isChannel ? (
+                        <IconMegaphone className="h-5 w-5" />
+                      ) : c.isGroup ? (
+                        <IconUsers className="h-5 w-5" />
+                      ) : (
+                        initialsOf(c.waNumber)
+                      )}
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center justify-between gap-2">
                         <span
                           className={`truncate text-[13px] font-medium ${
-                            c.isGroup || c.contactName ? "" : "font-mono"
+                            c.isGroup || c.isChannel || c.contactName ? "" : "font-mono"
                           } ${active ? "text-pastel-blue-ink" : "text-ink"}`}
                         >
-                          {c.isGroup ? (c.groupName ?? "Grup") : (c.contactName ?? formatPhone(c.waNumber))}
+                          {c.isChannel
+                            ? (c.groupName ?? "Channel")
+                            : c.isGroup
+                              ? (c.groupName ?? "Grup")
+                              : (c.contactName ?? formatPhone(c.waNumber))}
                         </span>
                         <span className={`shrink-0 text-[10.5px] ${active ? "text-pastel-blue-ink/70" : "text-ink-faint"}`}>
                           {relativeDuration(c.lastAt)}
                         </span>
                       </span>
-                      {!c.isGroup && c.contactName && (
+                      {!c.isGroup && !c.isChannel && c.contactName && (
                         <span
                           className={`block truncate font-mono text-[10.5px] ${
                             active ? "text-pastel-blue-ink/70" : "text-ink-faint"
@@ -969,27 +991,39 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
               </button>
               <div className="flex min-w-0 flex-1 items-center gap-2.5">
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-canvas text-xs font-semibold text-ink-muted">
-                  {selected.isGroup ? <IconUsers className="h-4 w-4" /> : initialsOf(selected.waNumber)}
+                  {selected.isChannel ? (
+                    <IconMegaphone className="h-4 w-4" />
+                  ) : selected.isGroup ? (
+                    <IconUsers className="h-4 w-4" />
+                  ) : (
+                    initialsOf(selected.waNumber)
+                  )}
                 </span>
                 <div className="min-w-0">
                   <p
                     className={`truncate text-sm font-medium text-ink ${
-                      selected.isGroup || selected.contactName ? "" : "font-mono"
+                      selected.isGroup || selected.isChannel || selected.contactName ? "" : "font-mono"
                     }`}
                   >
-                    {selected.isGroup ? (selected.groupName ?? "Grup") : (selected.contactName ?? formatPhone(selected.waNumber))}
+                    {selected.isChannel
+                      ? (selected.groupName ?? "Channel")
+                      : selected.isGroup
+                        ? (selected.groupName ?? "Grup")
+                        : (selected.contactName ?? formatPhone(selected.waNumber))}
                   </p>
                   <p className="text-[11px] text-ink-muted">
-                    {!selected.isGroup && selected.contactName && (
+                    {!selected.isGroup && !selected.isChannel && selected.contactName && (
                       <span className="font-mono">{formatPhone(selected.waNumber)} &middot; </span>
                     )}
-                    {selected.isGroup
-                      ? "Grup WA - percakapan manual"
-                      : channel === "EXTRA"
-                        ? "Percakapan manual"
-                        : selected.takeoverActive
-                          ? "Anda sedang mengambil alih"
-                          : "Bot menjawab otomatis"}
+                    {selected.isChannel
+                      ? "Channel WA - siaran satu arah, tidak bisa dibalas"
+                      : selected.isGroup
+                        ? "Grup WA - percakapan manual"
+                        : channel === "EXTRA"
+                          ? "Percakapan manual"
+                          : selected.takeoverActive
+                            ? "Anda sedang mengambil alih"
+                            : "Bot menjawab otomatis"}
                   </p>
                 </div>
               </div>
@@ -1082,7 +1116,12 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                             <p className="text-[11px] font-medium text-pastel-blue-ink">{m.senderName}</p>
                           )}
                           {!hideGenericLabel && (
-                            <p className="whitespace-pre-wrap">{linkifyText(m.message, "text-pastel-blue-ink")}</p>
+                            <p className="whitespace-pre-wrap">
+                              {linkifyText(m.message, "text-pastel-blue-ink")}
+                              {m.editedAt && (
+                                <span className="ml-1 align-middle text-[10px] italic opacity-60">(diedit)</span>
+                              )}
+                            </p>
                           )}
                         </div>
                       )}
@@ -1101,17 +1140,23 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
             </div>
 
             {error && <p className="border-t border-line px-5 py-2 text-xs text-pastel-red-ink">{error}</p>}
-            {channel === "SERVICE" && !selected.takeoverActive && !error && (
+            {channel === "SERVICE" && !selected.isChannel && !selected.takeoverActive && !error && (
               <p className="border-t border-line px-5 py-2 text-xs text-ink-muted">
                 Aktifkan &quot;Ambil Alih&quot; untuk membalas pesan ini secara manual.
               </p>
             )}
-            {isDisconnected && !error && (
+            {isDisconnected && !selected.isChannel && !error && (
               <p className="border-t border-line px-5 py-2 text-xs text-ink-muted">
                 Akun ini sedang terputus - riwayat tetap bisa dibaca, tapi sambungkan ulang dulu untuk membalas.
               </p>
             )}
 
+            {selected.isChannel ? (
+              <div className="flex items-center justify-center gap-2 bg-surface px-4 py-3.5 text-center text-xs text-ink-faint">
+                <IconMegaphone className="h-4 w-4 shrink-0" />
+                Channel WA cuma siaran satu arah dari pengelolanya - tidak bisa dibalas.
+              </div>
+            ) : (
             <div className="flex items-end gap-2 bg-surface px-3 py-2.5">
               <input
                 ref={fileInputRef}
@@ -1156,6 +1201,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                 <IconSend className="h-[18px] w-[18px] translate-x-[-1px]" />
               </button>
             </div>
+            )}
           </>
         )}
       </div>

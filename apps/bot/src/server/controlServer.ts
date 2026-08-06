@@ -8,6 +8,7 @@ import { sendReadyForPickupMessage } from "../notify/sendReadyForPickup";
 import { sendCustomMessage } from "../notify/sendCustomMessage";
 import { sendTakeoverNotice } from "../notify/sendTakeoverNotice";
 import { sendFileToResident } from "../notify/sendFileToResident";
+import { sendInboxReply } from "../notify/sendInboxReply";
 import { runBroadcast } from "../notify/broadcast";
 import { logoutSocket, startSocket } from "../wa/socket";
 import { waState } from "../wa/state";
@@ -155,6 +156,22 @@ export function startControlServer(): void {
       res.json({ ok: true });
     } catch (err) {
       logger.error({ err, waJid, active }, "Gagal mengirim notifikasi ambil-alih percakapan");
+      res.status(502).json({ error: "send_failed" });
+    }
+  });
+
+  app.post("/notify/inbox-reply", async (req, res) => {
+    const waJid = String(req.body?.waJid ?? "");
+    const message = String(req.body?.message ?? "");
+    if (!waJid || !message.trim()) {
+      res.status(400).json({ error: "missing_fields" });
+      return;
+    }
+    try {
+      await sendInboxReply(waJid, message);
+      res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err, waJid }, "Gagal mengirim balasan kotak masuk ke warga");
       res.status(502).json({ error: "send_failed" });
     }
   });

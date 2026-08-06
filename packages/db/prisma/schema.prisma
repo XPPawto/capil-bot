@@ -45,6 +45,7 @@ model Admin {
   requestMessages  RequestMessage[]
   broadcasts       Broadcast[]
   humanTakeovers   HumanTakeover[]
+  inboxMessages    InboxMessage[]
 }
 
 /// Kalau ada baris untuk suatu waJid, bot BERHENTI TOTAL membalas otomatis (menu/status/dsb)
@@ -230,6 +231,24 @@ model Broadcast {
   adminId         Int?
   admin           Admin?   @relation(fields: [adminId], references: [id])
   createdAt       DateTime @default(now())
+}
+
+/// Log SEMUA pesan masuk dari nomor WA manapun, terlepas dia punya Request aktif atau tidak -
+/// beda dari RequestMessage yang cuma hidup dalam konteks satu pengajuan. Ini dipakai halaman
+/// "Pesan Masuk" di dashboard supaya petugas bisa lihat & balas warga yang chat di luar alur
+/// formulir (mis. baru sekadar tanya-tanya, belum pernah mengajukan apa pun).
+model InboxMessage {
+  id        Int              @id @default(autoincrement())
+  waJid     String
+  waNumber  String
+  direction MessageDirection
+  message   String           @db.Text
+  adminId   Int?
+  admin     Admin?           @relation(fields: [adminId], references: [id])
+  createdAt DateTime         @default(now())
+
+  @@index([waJid])
+  @@index([createdAt])
 }
 
 /// Catatan monitoring: input warga/pengunjung yang polanya menyerupai percobaan SQL

@@ -20,3 +20,16 @@ export async function logInboundIfActiveRequest(waJid: string, text: string): Pr
     data: { requestId: active.id, direction: "INBOUND", message: trimmed },
   });
 }
+
+/**
+ * Dipanggil untuk SETIAP pesan teks masuk, terlepas dia punya Request aktif atau tidak -
+ * dasar dari halaman "Pesan Masuk" di dashboard, supaya petugas bisa lihat siapa saja yang
+ * chat bot (termasuk yang sekadar tanya-tanya, belum pernah mengajukan apa pun).
+ */
+export async function logInboxMessage(waJid: string, waNumber: string, text: string): Promise<void> {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  await prisma.inboxMessage.create({
+    data: { waJid, waNumber, direction: "INBOUND", message: trimmed },
+  });
+}

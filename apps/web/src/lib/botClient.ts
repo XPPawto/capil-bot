@@ -106,6 +106,22 @@ export async function notifyTakeover(waJid: string, active: boolean): Promise<bo
 }
 
 /**
+ * Balasan bebas dari halaman Pesan Masuk - beda dari sendCustomMessage karena tidak
+ * terikat pada Request, warga yang dibalas bisa jadi belum pernah mengajukan apa pun.
+ */
+export async function sendInboxReply(waJid: string, message: string): Promise<boolean> {
+  try {
+    const res = await callControlServer("/notify/inbox-reply", {
+      method: "POST",
+      body: JSON.stringify({ waJid, message }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Kirim soft file (dokumen digital final - mis. scan KK/Akte) ke warga lewat WA. Body
  * base64 bisa cukup besar (sampai ~13-14MB untuk berkas 10MB) - bukan best-effort diam-diam
  * seperti notifikasi status, kegagalan harus dikembalikan ke admin supaya tahu harus ulang.

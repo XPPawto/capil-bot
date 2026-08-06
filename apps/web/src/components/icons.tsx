@@ -113,6 +113,24 @@ export function IconShield({ className = base }: IconProps) {
   );
 }
 
+export function IconChat({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9A1.5 1.5 0 0 1 18.5 16H9l-4.5 4v-4H5.5A1.5 1.5 0 0 1 4 14.5Z" />
+      <path d="M8 8.75h8M8 12h5" />
+    </svg>
+  );
+}
+
+export function IconSearch({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="M20 20l-4.8-4.8" />
+    </svg>
+  );
+}
+
 export function IconMenu({ className = "h-6 w-6" }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" className={className}>

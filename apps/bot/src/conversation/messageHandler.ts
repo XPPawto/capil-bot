@@ -5,7 +5,7 @@ import { runExclusive } from "./mutex";
 import { checkRateLimit } from "./rateLimit";
 import { humanSendMessage } from "../wa/humanSend";
 import { isHumanTakeoverActive } from "./humanTakeover";
-import { logInboundIfActiveRequest } from "./messageLog";
+import { logInboundIfActiveRequest, logInboxMessage } from "./messageLog";
 import { handleVoiceNote } from "../media/voiceNote";
 
 interface MessagesUpsertPayload {
@@ -60,6 +60,14 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
 
     const waNumber = extractWaNumber(msg, jid);
     const text = extractText(msg);
+
+    // Dicatat lebih dulu, terlepas dari state/takeover - dasar halaman "Pesan Masuk" yang
+    // menampilkan SEMUA nomor yang pernah chat bot, bukan cuma yang punya pengajuan aktif.
+    if (text) {
+      logInboxMessage(jid, waNumber, text).catch((err) =>
+        logger.error({ err, jid }, "Gagal mencatat pesan ke kotak masuk")
+      );
+    }
 
     try {
       // Petugas sedang ambil alih percakapan ini secara manual lewat dashboard - bot

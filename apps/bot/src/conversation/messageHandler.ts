@@ -16,7 +16,7 @@ import {
   type GroupMeta,
 } from "./messageLog";
 import { handleVoiceNote } from "../media/voiceNote";
-import { logInboxMediaIfPresent } from "../media/inboxMedia";
+import { logInboxMediaIfPresent, logViewOnceUnavailableNote } from "../media/inboxMedia";
 import { getGroupName } from "../wa/groupNameCache";
 import { getChannelName } from "../wa/channelNameCache";
 import { wasSentByDashboard } from "../wa/sentMessageTracker";
@@ -227,6 +227,40 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
     // "@newsletter" = Channel WhatsApp (siaran satu-arah, bukan percakapan dengan orang
     // tertentu) - tidak relevan buat kotak masuk, diskip sama seperti broadcast/status.
     if (jid === "status@broadcast" || jid.endsWith("@broadcast") || jid.endsWith("@newsletter")) continue;
+
+    // Sama seperti di extraAccountMessageHandler.ts: kiriman "sekali lihat" datang sebagai
+    // amplop KOSONG, jadi harus dicatat SEBELUM pagar `!msg.message` di bawah - kalau tidak,
+    // warga yang mengirim foto sekali-lihat ke nomor layanan hilang jejaknya sama sekali.
+    // Syarat `!msg.message` menjaga agar kiriman susulan dari HP (kalau permintaan kirim-ulang
+    // otomatis Baileys akhirnya dijawab) tetap lewat jalur media biasa, bukan dibuang di sini.
+    if (msg.key.isViewOnce && !msg.message) {
+      const isGroupChat = jid.endsWith("@g.us");
+      const senderNumber = isGroupChat && !msg.key.fromMe ? extractParticipantNumber(msg) : undefined;
+      const noteWaNumber = isGroupChat
+        ? (senderNumber ?? jid.split("@")[0])
+        : msg.key.fromMe
+          ? await resolveWaNumberForOutbound(sock, jid)
+          : extractWaNumber(msg, jid);
+      const noteGroup: GroupMeta | undefined = isGroupChat
+        ? {
+            isGroup: true,
+            groupName: await getGroupName(sock, jid),
+            senderNumber,
+            senderName: msg.key.fromMe ? undefined : (msg.pushName ?? undefined),
+          }
+        : undefined;
+      await logViewOnceUnavailableNote(
+        jid,
+        noteWaNumber,
+        "SERVICE",
+        noteGroup,
+        msg.key.fromMe ? "OUTBOUND" : "INBOUND",
+        undefined,
+        msg.key.id ?? undefined
+      );
+      continue;
+    }
+
     if (!msg.message) continue;
 
     if (await handleMessageEditIfPresent(msg, jid, "SERVICE")) continue;

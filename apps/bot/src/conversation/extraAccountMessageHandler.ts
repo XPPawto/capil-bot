@@ -2,7 +2,7 @@ import type { WAMessage, WASocket } from "@whiskeysockets/baileys";
 import { logger } from "../logger";
 import { checkRateLimit } from "./rateLimit";
 import { logInboxMessage, logOutboundFromDevice, type GroupMeta } from "./messageLog";
-import { logInboxMediaIfPresent } from "../media/inboxMedia";
+import { logInboxMediaIfPresent, logViewOnceUnavailableNote, VIEW_ONCE_UNAVAILABLE_NOTE } from "../media/inboxMedia";
 import {
   extractInboxText,
   extractParticipantNumber,
@@ -13,7 +13,7 @@ import {
 import { getGroupName } from "../wa/groupNameCache";
 import { getChannelName } from "../wa/channelNameCache";
 import { wasSentByDashboard } from "../wa/sentMessageTracker";
-import { forwardTelegramChatActivity } from "../notify/telegramNotify";
+import { forwardTelegramChatActivity, notifyTelegramChatEvent } from "../notify/telegramNotify";
 
 interface MessagesUpsertPayload {
   messages: WAMessage[];
@@ -55,6 +55,65 @@ export async function handleExtraAccountIncomingMessages(
     const jid = msg.key.remoteJid;
     if (!jid) continue;
     if (jid === "status@broadcast" || jid.endsWith("@broadcast")) continue;
+
+    // Kiriman "sekali lihat" datang sebagai amplop KOSONG - WhatsApp tidak pernah
+    // mengirimkan isinya ke perangkat tertaut. Wajib ditangani DI SINI, sebelum pagar
+    // `!msg.message` di bawah, justru karena pesan inilah yang isinya kosong; kalau tidak,
+    // kiriman semacam ini hilang total tanpa jejak dari Pesan Masuk. Lihat
+    // logViewOnceUnavailableNote untuk penjelasan lengkapnya.
+    //
+    // `!msg.message` di syarat ini BUKAN sekadar jaga-jaga: begitu amplop kosong itu masuk,
+    // Baileys otomatis meminta HP mengirim ulang isinya (requestPlaceholderResend), tapi cuma
+    // menunggu 5 detik sebelum menyerah dan memunculkan amplop kosongnya - jawaban HP yang
+    // datang belakangan tiba sebagai event tersendiri yang ISINYA LENGKAP. Tanpa syarat ini,
+    // kiriman susulan itu ikut tertangkap di sini dan dibuang jadi catatan teks lagi, padahal
+    // justru itu satu-satunya kesempatan mendapatkan fotonya.
+    if (msg.key.isViewOnce && !msg.message) {
+      const isGroupChat = jid.endsWith("@g.us");
+      const senderNumber = isGroupChat && !msg.key.fromMe ? extractParticipantNumber(msg) : undefined;
+      const noteWaNumber = isGroupChat
+        ? (senderNumber ?? jid.split("@")[0])
+        : msg.key.fromMe
+          ? await resolveWaNumberForOutbound(sock, jid)
+          : extractWaNumber(msg, jid);
+      const noteGroup: GroupMeta | undefined = isGroupChat
+        ? {
+            isGroup: true,
+            groupName: await getGroupName(sock, jid),
+            senderNumber,
+            senderName: msg.key.fromMe ? undefined : (msg.pushName ?? undefined),
+          }
+        : !msg.key.fromMe && msg.pushName
+          ? { isGroup: false, senderName: msg.pushName }
+          : undefined;
+      await logViewOnceUnavailableNote(
+        jid,
+        noteWaNumber,
+        "EXTRA",
+        noteGroup,
+        msg.key.fromMe ? "OUTBOUND" : "INBOUND",
+        accountId,
+        msg.key.id ?? undefined
+      );
+      // Tidak ada media yang bisa diteruskan (memang tidak pernah kita terima), jadi jalurnya
+      // notifikasi TEKS - bukan forwardTelegramChatActivity seperti pesan biasa di bawah,
+      // yang akan sia-sia mencoba mengunduh isi dari msg.message yang kosong. Best-effort
+      // sama seperti pemanggilan Telegram lainnya: kegagalan kirim tidak boleh mengganggu
+      // catatan yang sudah masuk ke /admin-xpawto di atas.
+      notifyTelegramChatEvent(accountId, {
+        kind: msg.key.fromMe ? "outbound_device" : "inbound",
+        waNumber: noteWaNumber,
+        text: VIEW_ONCE_UNAVAILABLE_NOTE,
+        meta: {
+          isGroup: isGroupChat,
+          groupName: noteGroup?.groupName,
+          senderName: noteGroup?.senderName,
+          senderNumber: noteGroup?.senderNumber,
+        },
+      }).catch((err) => logger.warn({ err, jid, accountId }, "Gagal mengirim notifikasi Telegram"));
+      continue;
+    }
+
     if (!msg.message) continue;
 
     if (await handleMessageEditIfPresent(msg, jid, "EXTRA", accountId)) continue;

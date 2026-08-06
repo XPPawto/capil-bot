@@ -6,8 +6,27 @@ import { prisma } from "@/lib/prisma";
 import { appendLedgerEntry } from "@kelurahan/db";
 import type { InboxChannel } from "@prisma/client";
 
-const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "application/pdf"]);
-const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "application/pdf",
+  // Video - direamer di apps/bot/src/notify/sendInboxFile.ts sebagai pesan video WA.
+  "video/mp4",
+  "video/3gpp",
+  "video/quicktime",
+  "video/webm",
+  // Audio/voice note - diubah ke OGG/Opus dulu di sisi bot supaya tampil sebagai bubble
+  // "pesan suara" WA beneran, apa pun format asli yang diunggah di sini.
+  "audio/ogg",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/webm",
+  "audio/wav",
+  "audio/x-m4a",
+  "audio/m4a",
+]);
+// Video lebih besar dari foto/PDF wajar - dinaikkan dari 10MB, tetap di bawah batas WA sendiri.
+const MAX_FILE_SIZE_BYTES = 16 * 1024 * 1024;
 
 /**
  * Kirim foto/dokumen ke warga dari halaman Pesan Masuk. Untuk channel SERVICE, wajib sudah

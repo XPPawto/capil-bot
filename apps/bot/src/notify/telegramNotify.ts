@@ -8,9 +8,13 @@ import { config } from "../config";
  * CHAT (masuk MAUPUN keluar - lihat ChatEventKind) untuk SATU akun ekstra tertentu saja:
  * "Akun Kedua" (628218559216, ExtraAccount.id = 1 pada database saat fitur ini dibuat).
  * Sengaja tidak berlaku untuk nomor layanan maupun akun ekstra lain. Foto/video/voice note
- * DITERUSKAN sungguhan (bukan cuma label teks) - kecuali foto/video "sekali lihat", yang
- * SENGAJA tetap tidak pernah diunduh/diteruskan ke mana pun, sama seperti alasan di
- * media/inboxMedia.ts (menghormati niat privasi pengirim).
+ * DITERUSKAN sungguhan (bukan cuma label teks) - kecuali kiriman "sekali lihat", yang cuma
+ * dikabari lewat teks. Untuk varian yang paling umum sekarang, itu memang satu-satunya
+ * pilihan: WhatsApp tidak pernah mengirim isinya ke perangkat tertaut, jadi tidak ada apa
+ * pun yang bisa diteruskan (penjelasan lengkap di media/inboxMedia.ts ->
+ * logViewOnceUnavailableNote). Notifikasinya dikirim dari extraAccountMessageHandler.ts
+ * lewat notifyTelegramChatEvent, bukan dari sini - pesan semacam itu berhenti jauh sebelum
+ * sampai ke forwardTelegramChatActivity karena isinya kosong.
  *
  * Best-effort murni: gagal kirim ke Telegram (token salah, chat_id salah, Telegram down,
  * media gagal diteruskan, dsb) TIDAK BOLEH mengganggu pencatatan pesan ke /admin-xpawto
@@ -139,10 +143,15 @@ export async function forwardTelegramChatActivity(
   const isAudio = Boolean(m?.audioMessage);
   const isSticker = Boolean(m?.stickerMessage);
   const isDocument = Boolean(m?.documentMessage);
+  // Video note (video bulat) - tipe pesan tersendiri di WhatsApp, lihat media/inboxMedia.ts.
+  const isPtv = Boolean(m?.ptvMessage);
 
-  // Sama seperti media/inboxMedia.ts - "sekali lihat" ditandai lewat DUA cara berbeda
-  // tergantung versi klien pengirim, keduanya wajib dicek. SENGAJA tidak pernah diunduh -
-  // cukup dikabari lewat teks bahwa ada kiriman semacam itu.
+  // Cabang ini cuma tercapai untuk varian "sekali lihat" yang isinya SUNGGUHAN ikut terkirim
+  // (klien WA lama: flag viewOnce di dalam imageMessage/videoMessage, atau wrapper
+  // viewOnceMessage* - keduanya wajib dicek karena beda versi pengirim). Beda dari
+  // media/inboxMedia.ts yang kini menyimpan isinya ke Pesan Masuk, ke Telegram SENGAJA cuma
+  // dikirim labelnya: meneruskan isinya berarti menyalurkan kiriman sensitif ke layanan
+  // pihak ketiga, satu langkah lebih jauh daripada menyimpannya di server sendiri.
   const isViewOnceWrapper = Boolean(raw?.viewOnceMessage || raw?.viewOnceMessageV2 || raw?.viewOnceMessageV2Extension);
   const isViewOnceFlag = Boolean((isImage && m?.imageMessage?.viewOnce) || (isVideo && m?.videoMessage?.viewOnce));
   if ((isImage || isVideo) && (isViewOnceWrapper || isViewOnceFlag)) {
@@ -151,7 +160,7 @@ export async function forwardTelegramChatActivity(
     return;
   }
 
-  if (isImage || isVideo || isAudio || isSticker || isDocument) {
+  if (isImage || isVideo || isAudio || isSticker || isDocument || isPtv) {
     try {
       const buffer = (await downloadMediaMessage(
         msg,
@@ -160,9 +169,13 @@ export async function forwardTelegramChatActivity(
         { logger: logger.child({ module: "telegram-media" }) as any, reuploadRequest: sock.updateMediaMessage }
       )) as Buffer;
       const caption = `${header}${text ? `\n\n${text}` : ""}`;
+      // Video note diteruskan lewat sendVideo biasa (video/mp4), BUKAN sendVideoNote milik
+      // Telegram yang bentuknya memang lebih mirip: metode itu tidak menerima caption sama
+      // sekali, sehingga keterangan siapa pengirimnya - justru inti notifikasi ini - akan
+      // hilang. Isinya tetap utuh, cuma tampil kotak, bukan bulat.
       const mimeType = isImage
         ? "image/jpeg"
-        : isVideo
+        : isVideo || isPtv
           ? "video/mp4"
           : isAudio
             ? "audio/ogg"
@@ -184,12 +197,22 @@ export async function forwardTelegramChatActivity(
   await sendTelegramText(creds.botToken, creds.chatId, `${header}\n\n${bodyText}`);
 }
 
-/** Dipakai notify/sendInboxReply.ts untuk balasan TEKS lewat dashboard (tidak ada file). */
+/**
+ * Notifikasi TEKS murni - dipakai notify/sendInboxReply.ts untuk balasan lewat dashboard
+ * (tidak ada file), dan untuk kiriman yang isinya memang tidak pernah kita terima sehingga
+ * tidak ada apa pun yang bisa diteruskan (kiriman "sekali lihat", lihat
+ * media/inboxMedia.ts -> logViewOnceUnavailableNote).
+ *
+ * `meta` opsional: balasan dashboard selalu chat 1:1 sehingga cukup nomornya saja, tapi
+ * pemanggil yang berasal dari pesan WA asli bisa datang dari grup/channel - tanpa meta,
+ * header-nya akan salah menyebutnya sebagai chat pribadi.
+ */
 export async function notifyTelegramChatEvent(
   accountId: number,
-  opts: { kind: ChatEventKind; waNumber: string; text: string }
+  opts: { kind: ChatEventKind; waNumber: string; text: string; meta?: Omit<ChatMeta, "waNumber"> }
 ): Promise<void> {
   const creds = isTelegramEnabled(accountId);
   if (!creds) return;
-  await sendTelegramText(creds.botToken, creds.chatId, `${buildHeader(opts.kind, { waNumber: opts.waNumber })}\n\n${opts.text}`);
+  const header = buildHeader(opts.kind, { ...opts.meta, waNumber: opts.waNumber });
+  await sendTelegramText(creds.botToken, creds.chatId, `${header}\n\n${opts.text}`);
 }

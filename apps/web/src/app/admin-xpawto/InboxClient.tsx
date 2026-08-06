@@ -15,6 +15,7 @@ import {
   IconSend,
   IconShield,
   IconUsers,
+  IconViewOnce,
 } from "@/components/icons";
 
 type Channel = "SERVICE" | "EXTRA";
@@ -557,7 +558,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
         setError(
           data.error === "takeover_required"
             ? 'Aktifkan "Ambil Alih" dulu sebelum mengirim file.'
-            : "Gagal mengirim file (format JPG/PNG/PDF, maks 10MB)."
+            : "Gagal mengirim file (format foto/video/voice note/PDF, maks 16MB)."
         );
         return;
       }
@@ -1153,10 +1154,23 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                 // Stiker tersimpan sebagai image/webp (sama seperti foto) - dibedakan cuma
                 // dari labelnya, dirender lebih kecil & tanpa crop (bukan foto persegi panjang).
                 const isSticker = isImage && m.message === "[Stiker]";
+                // Foto/video yang aslinya dikirim sebagai "sekali lihat" tetap dirender penuh
+                // seperti media biasa, tapi diberi penanda kecil di atas medianya - pengirimnya
+                // mengira isi ini hangus setelah dibuka sekali, jadi petugas perlu tahu bahwa
+                // kiriman ini dimaksudkan sensitif.
+                const isViewOnce =
+                  (isImage && m.message === "[Foto sekali lihat]") ||
+                  (isVideo && m.message === "[Video sekali lihat]");
                 // "[Foto]"/"[Video]"/"[Stiker]"/"[Dokumen]" cuma label generik yang dibuat
                 // otomatis saat menyimpan lampiran (lihat inboxMedia.ts) - tidak perlu
                 // ditampilkan lagi sebagai teks terpisah kalau lampirannya sudah dirender.
+                // "Video note" (video bulat) tersimpan sebagai mp4 persegi biasa - dibedakan
+                // cuma dari labelnya, lalu dirender bulat & berukuran tetap seperti di
+                // WhatsApp, bukan selebar bubble seperti video biasa.
+                const isVideoNote = isVideo && m.message === "[Video note]";
                 const hideGenericLabel =
+                  isViewOnce ||
+                  isVideoNote ||
                   (isImage && (m.message === "[Foto]" || m.message === "[Stiker]")) ||
                   (isVideo && m.message === "[Video]") ||
                   (isOtherFile && m.message === "[Dokumen]");
@@ -1168,6 +1182,12 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                         m.direction === "OUTBOUND" ? "rounded-tr-sm bg-pastel-green" : "rounded-tl-sm bg-surface"
                       } ${bubbleTextClass}`}
                     >
+                      {isViewOnce && (
+                        <div className="flex items-center gap-1.5 px-3.5 pb-1 pt-2 text-[10.5px] font-medium uppercase tracking-wide opacity-70">
+                          <IconViewOnce className="h-3.5 w-3.5 shrink-0" />
+                          Sekali lihat
+                        </div>
+                      )}
                       {isImage && (
                         <button
                           type="button"
@@ -1186,8 +1206,17 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                           />
                         </button>
                       )}
-                      {isVideo && (
+                      {isVideo && !isVideoNote && (
                         <video src={m.attachmentUrl!} controls className="block max-h-72 w-full bg-canvas" />
+                      )}
+                      {isVideoNote && (
+                        <div className="p-1.5">
+                          <video
+                            src={m.attachmentUrl!}
+                            controls
+                            className="block aspect-square h-48 w-48 max-w-full rounded-full bg-canvas object-cover"
+                          />
+                        </div>
                       )}
                       {isAudio && (
                         <div className="px-2.5 pt-2.5">
@@ -1259,7 +1288,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/jpeg,image/png,application/pdf"
+                accept="image/jpeg,image/png,application/pdf,video/mp4,video/3gpp,video/quicktime,video/webm,audio/ogg,audio/mpeg,audio/mp4,audio/webm,audio/wav,audio/x-m4a,audio/m4a"
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];

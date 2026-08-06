@@ -35,9 +35,10 @@ export function startControlServer(): void {
   // menyusun ulang JSON.stringify(req.body) di sini berisiko beda urutan/whitespace.
   app.use(
     express.json({
-      // 16mb: cukup untuk file base64 (berkas 10MB -> ~13.4MB base64) + overhead JSON,
-      // dipakai endpoint /notify/send-file untuk soft file yang dikirim admin ke warga.
-      limit: "16mb",
+      // 24mb: cukup untuk file base64 (berkas 16MB -> ~21.4MB base64) + overhead JSON,
+      // dipakai endpoint /notify/send-file & /notify/inbox-file untuk berkas yang dikirim
+      // admin ke warga (termasuk video/voice note lewat /admin-xpawto).
+      limit: "24mb",
       verify: (req, _res, buf) => {
         (req as RequestWithRawBody).rawBody = buf.toString("utf8");
       },

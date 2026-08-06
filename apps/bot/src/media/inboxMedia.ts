@@ -44,6 +44,58 @@ async function createLedgeredInboxMessage(
   return row;
 }
 
+/**
+ * Foto/video "sekali lihat" TIDAK PERNAH dikirim WhatsApp ke perangkat tertaut (linked
+ * device) seperti bot ini - ini pembatasan di sisi WhatsApp sendiri, bukan bug di kode kita
+ * dan bukan sesuatu yang bisa diakali dari sini. Yang datang cuma amplop pesannya: stanza-nya
+ * berisi anak `<unavailable type="view_once"/>` SEBAGAI PENGGANTI `<enc>`, jadi tidak ada
+ * ciphertext apa pun untuk didekripsi. Baileys menandainya dengan `msg.key.isViewOnce = true`
+ * lalu menyetel messageStubType = CIPHERTEXT dengan `message` KOSONG (lihat
+ * Utils/decode-wa-message.js). Akibatnya pesan semacam ini berhenti jauh sebelum
+ * logInboxMediaIfPresent - kena pagar `if (!msg.message) continue` di handler - sehingga
+ * dulu hilang total dari Pesan Masuk tanpa jejak apa pun.
+ *
+ * Karena isinya memang tidak ada, yang bisa dilakukan cuma mencatat KEJADIANNYA: petugas
+ * jadi tahu ada kiriman sekali-lihat pada jam sekian dari siapa, dan bisa membukanya
+ * langsung di HP akun bersangkutan (satu-satunya tempat isinya benar-benar ada).
+ */
+/** Dipakai bersama oleh catatan Pesan Masuk dan notifikasi Telegram - satu sumber supaya
+ * teksnya tidak pernah beda antara keduanya. Tipe medianya (foto atau video) sengaja tidak
+ * disebut: amplop yang datang memang tidak membawa informasi itu sama sekali. */
+export const VIEW_ONCE_UNAVAILABLE_NOTE = "[Kiriman sekali lihat - hanya bisa dibuka langsung di HP]";
+
+export async function logViewOnceUnavailableNote(
+  waJid: string,
+  waNumber: string,
+  channel: InboxChannel,
+  group?: GroupMeta,
+  direction: "INBOUND" | "OUTBOUND" = "INBOUND",
+  extraAccountId?: number,
+  waMessageId?: string
+): Promise<void> {
+  try {
+    await createLedgeredInboxMessage(
+      {
+        waJid,
+        waNumber,
+        channel,
+        extraAccountId,
+        direction,
+        waMessageId,
+        message: VIEW_ONCE_UNAVAILABLE_NOTE,
+        isGroup: group?.isGroup ?? false,
+        isChannel: group?.isChannel ?? false,
+        groupName: group?.groupName,
+        senderNumber: group?.senderNumber,
+        senderName: group?.senderName,
+      },
+      null
+    );
+  } catch (err) {
+    logger.warn({ err, waJid }, "Gagal mencatat catatan kiriman sekali lihat");
+  }
+}
+
 const EXT_BY_MIME: Record<string, string> = {
   "image/jpeg": "jpg",
   "image/png": "png",
@@ -82,34 +134,49 @@ export async function logInboxMediaIfPresent(
   const isDocument = Boolean(m.documentMessage);
   const isVideo = Boolean(m.videoMessage);
   const isSticker = Boolean(m.stickerMessage);
+  // "Video note" (video bulat pendek yang direkam langsung dari tombol kamera) BUKAN
+  // videoMessage biasa - WhatsApp mengirimnya sebagai tipe pesan tersendiri, `ptvMessage`
+  // (isinya struktur IVideoMessage yang sama). Karena dulu tidak ikut dikenali di sini,
+  // kiriman semacam ini berhenti di pagar `return` di bawah dan hilang total dari Pesan
+  // Masuk. Unduhannya sendiri tidak butuh perlakuan khusus: Baileys memetakan mediaType
+  // "ptv" ke kunci HKDF "Video" yang sama (lihat Defaults/index.js MEDIA_HKDF_KEY_MAPPING).
+  const isPtv = Boolean(m.ptvMessage);
   // Audio cuma ditangani di sini untuk channel EXTRA (akun ekstra tidak punya alur
   // syarat/Request sama sekali). Untuk SERVICE, voice note sudah punya jalur khusus sendiri
   // (media/voiceNote.ts, tersimpan ke RequestMessage) - kalau ikut ditangani di sini juga,
   // hasilnya jadi dobel tampil di thread gabungan /admin-xpawto untuk warga yang sedang
   // punya pengajuan aktif.
   const isAudio = Boolean(m.audioMessage) && channel === "EXTRA";
-  if (!isImage && !isDocument && !isAudio && !isVideo && !isSticker) return;
+  if (!isImage && !isDocument && !isAudio && !isVideo && !isSticker && !isPtv) return;
 
-  // Foto/video "sekali lihat" SENGAJA TIDAK diunduh sama sekali (bukan cuma tidak
-  // ditampilkan) - pengirim secara eksplisit memilih supaya kontennya hilang setelah
-  // dilihat sekali, seringnya justru karena isinya sensitif. Baileys secara teknis BISA
-  // mengunduhnya (batasan "sekali lihat" cuma ditegakkan di aplikasi resmi, bukan di
-  // protokolnya), tapi menyimpannya permanen di sini akan melanggar niat privasi
-  // pengirimnya - cukup dicatat sebagai catatan teks biasa, supaya petugas tahu ada
-  // kiriman semacam itu tanpa ikut menyimpan isinya.
+  // Foto/video "sekali lihat" diunduh dan disimpan seperti media biasa, supaya petugas bisa
+  // melihat ISINYA di Pesan Masuk - bukan cuma label teks "ada kiriman sekali lihat" yang
+  // praktis tidak berguna untuk menindaklanjuti pengaduan/pengajuan. Batasan "sekali lihat"
+  // cuma ditegakkan di aplikasi WhatsApp resmi, bukan di protokolnya, jadi Baileys memang
+  // bisa mengunduhnya. Konsekuensinya disadari: pengirim mengira kontennya hilang setelah
+  // dibuka sekali, padahal di sini tersimpan permanen (terenkripsi, sama seperti lampiran
+  // lain). Karena itu labelnya SENGAJA tetap menandai asal-usulnya sebagai "sekali lihat",
+  // supaya petugas tahu kiriman ini dimaksudkan sensitif oleh pengirimnya dan
+  // memperlakukannya sesuai itu.
   //
   // WA menandai "sekali lihat" dengan DUA cara berbeda tergantung versi klien pengirim:
   // (a) flag viewOnce=true langsung di imageMessage/videoMessage-nya sendiri (unwrap-nya
   // sudah dibuka extractMessageContent di atas), ATAU (b) dibungkus wrapper khusus
   // (viewOnceMessage/viewOnceMessageV2/viewOnceMessageV2Extension) yang statusnya cuma
   // kelihatan di objek MENTAH sebelum dibuka bungkusnya - makanya dicek dari `raw`, bukan
-  // `m`. Kalau cuma cek satu cara saja, sebagian pesan sekali-lihat lolos tak terdeteksi
-  // dan berakhir didownload seperti foto biasa (atau malah tidak tercatat sama sekali kalau
-  // salah kenali - ini bug yang baru diperbaiki).
+  // `m`. Keduanya wajib dicek supaya semua varian dapat label yang benar (downloadMediaMessage
+  // sendiri sudah membuka bungkusnya lewat extractMessageContent, jadi unduhannya tidak
+  // butuh perlakuan khusus).
   const isViewOnceWrapper = Boolean(raw?.viewOnceMessage || raw?.viewOnceMessageV2 || raw?.viewOnceMessageV2Extension);
   const isViewOnceFlag = Boolean((isImage && m.imageMessage?.viewOnce) || (isVideo && m.videoMessage?.viewOnce));
-  if ((isImage || isVideo) && (isViewOnceWrapper || isViewOnceFlag)) {
-    const label = isImage ? "[Foto sekali lihat - tidak disimpan]" : "[Video sekali lihat - tidak disimpan]";
+  const isViewOnce = (isImage || isVideo) && (isViewOnceWrapper || isViewOnceFlag);
+
+  /** Kiriman "sekali lihat" tidak bisa diminta ulang ke pengirim (di HP-nya sudah hangus
+   * begitu dibuka), jadi kalau unduhan atau deteksi tipenya gagal, jangan sampai jejaknya
+   * hilang total dari thread seperti media biasa - catat minimal sebagai teks supaya petugas
+   * tahu ada kiriman yang lolos dan bisa menanyakannya lagi ke warga. */
+  const logViewOnceFallback = async (): Promise<void> => {
+    if (!isViewOnce) return;
     try {
       await createLedgeredInboxMessage(
         {
@@ -118,7 +185,7 @@ export async function logInboxMediaIfPresent(
           channel,
           extraAccountId,
           direction,
-          message: label,
+          message: isImage ? "[Foto sekali lihat - gagal disimpan]" : "[Video sekali lihat - gagal disimpan]",
           isGroup: group?.isGroup ?? false,
           isChannel: group?.isChannel ?? false,
           groupName: group?.groupName,
@@ -130,8 +197,7 @@ export async function logInboxMediaIfPresent(
     } catch (err) {
       logger.warn({ err, waJid }, "Gagal mencatat catatan foto/video sekali lihat");
     }
-    return;
-  }
+  };
 
   try {
     const buffer = (await downloadMediaMessage(
@@ -150,13 +216,15 @@ export async function logInboxMediaIfPresent(
       realMimeType = "audio/ogg";
       ext = "ogg";
       label = "[Pesan suara]";
-    } else if (isVideo) {
+    } else if (isVideo || isPtv) {
       // Sama seperti audio: video bukan tipe syarat yang divalidasi ketat (detectRealMimeType
       // cuma kenal JPEG/PNG/PDF) - dipercaya dari mimetype yang diklaim WhatsApp saja, ini
       // cuma untuk visibilitas percakapan di Pesan Masuk, bukan gerbang keamanan.
-      realMimeType = m.videoMessage?.mimetype ?? "video/mp4";
+      realMimeType = (isPtv ? m.ptvMessage?.mimetype : m.videoMessage?.mimetype) ?? "video/mp4";
       ext = EXT_BY_VIDEO_MIME[realMimeType] ?? "mp4";
-      label = "[Video]";
+      // Video note dibedakan lewat label supaya UI bisa merendernya bulat seperti di
+      // WhatsApp - berkasnya sendiri mp4 persegi biasa, tidak ada bedanya dari video lain.
+      label = isPtv ? "[Video note]" : isViewOnce ? "[Video sekali lihat]" : "[Video]";
     } else if (isSticker) {
       // Stiker WA selalu webp (statis maupun animasi) - "image/webp" supaya UI merender-nya
       // sebagai <img> apa adanya, sama seperti foto biasa (tidak perlu komponen khusus).
@@ -168,9 +236,12 @@ export async function logInboxMediaIfPresent(
       // ini, lewati saja tanpa error - ini cuma catatan tambahan untuk visibilitas, bukan
       // gerbang validasi seperti pada alur upload syarat resmi.
       realMimeType = detectRealMimeType(buffer);
-      if (!realMimeType) return;
+      if (!realMimeType) {
+        await logViewOnceFallback();
+        return;
+      }
       ext = EXT_BY_MIME[realMimeType] ?? "bin";
-      label = isImage ? "[Foto]" : "[Dokumen]";
+      label = isImage ? (isViewOnce ? "[Foto sekali lihat]" : "[Foto]") : "[Dokumen]";
     }
 
     const safeJid = waJid.replace(/[^a-zA-Z0-9._@-]/g, "_");
@@ -204,5 +275,6 @@ export async function logInboxMediaIfPresent(
     );
   } catch (err) {
     logger.warn({ err, waJid }, "Gagal menyimpan media warga ke kotak masuk");
+    await logViewOnceFallback();
   }
 }

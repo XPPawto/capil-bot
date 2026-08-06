@@ -194,6 +194,17 @@ export function IconCheck({ className = "h-3.5 w-3.5" }: IconProps) {
   );
 }
 
+// Lingkaran putus-putus berisi angka "1" - lambang "sekali lihat" ala WhatsApp, dipakai
+// menandai foto/video yang aslinya dikirim dengan mode itu.
+export function IconViewOnce({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="12" cy="12" r="9" strokeDasharray="2.6 2.6" />
+      <path d="M10.5 9.5L12.5 8v8" />
+    </svg>
+  );
+}
+
 // Dua centang - dipakai untuk status "sampai di HP" (abu-abu) maupun "sudah dibaca" (biru,
 // lewat warna teks dari pemanggil, bukan dari icon ini sendiri).
 export function IconCheckAll({ className = "h-4 w-4" }: IconProps) {

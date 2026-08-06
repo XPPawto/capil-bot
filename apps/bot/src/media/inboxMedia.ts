@@ -1,14 +1,48 @@
 import fs from "fs";
 import path from "path";
-import { randomUUID } from "crypto";
+import crypto, { randomUUID } from "crypto";
 import { downloadMediaMessage, extractMessageContent } from "@whiskeysockets/baileys";
 import type { WAMessage, WASocket } from "@whiskeysockets/baileys";
-import { prisma, type InboxChannel } from "@kelurahan/db";
+import { prisma, appendLedgerEntry, type InboxChannel, type InboxMessage } from "@kelurahan/db";
 import { config } from "../config";
 import { logger } from "../logger";
 import { encryptBuffer } from "./fileEncryption";
 import { detectRealMimeType } from "./fileSignature";
 import type { GroupMeta } from "../conversation/messageLog";
+
+/** Sama seperti createLedgeredInboxMessage di conversation/messageLog.ts - dipisah di sini
+ * supaya media/inboxMedia.ts tidak perlu impor balik dari conversation/, tapi tetap menjamin
+ * ATURAN yang sama: tidak ada baris InboxMessage yang lolos tanpa jejak ledger. */
+async function createLedgeredInboxMessage(
+  data: Parameters<typeof prisma.inboxMessage.create>[0]["data"],
+  attachmentSha256: string | null
+): Promise<InboxMessage> {
+  const row = await prisma.inboxMessage.create({ data });
+  try {
+    await appendLedgerEntry("MESSAGE_CREATED", row.id, {
+      waJid: row.waJid,
+      waNumber: row.waNumber,
+      channel: row.channel,
+      extraAccountId: row.extraAccountId,
+      direction: row.direction,
+      message: row.message,
+      attachmentPath: row.attachmentPath,
+      attachmentMimeType: row.attachmentMimeType,
+      attachmentSha256,
+      isGroup: row.isGroup,
+      isChannel: row.isChannel,
+      groupName: row.groupName,
+      senderNumber: row.senderNumber,
+      senderName: row.senderName,
+      adminId: row.adminId,
+      waMessageId: row.waMessageId,
+      createdAt: row.createdAt.toISOString(),
+    });
+  } catch (err) {
+    logger.error({ err, inboxMessageId: row.id }, "GAGAL menulis jejak audit ledger untuk media yang baru dicatat");
+  }
+  return row;
+}
 
 const EXT_BY_MIME: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -77,8 +111,8 @@ export async function logInboxMediaIfPresent(
   if ((isImage || isVideo) && (isViewOnceWrapper || isViewOnceFlag)) {
     const label = isImage ? "[Foto sekali lihat - tidak disimpan]" : "[Video sekali lihat - tidak disimpan]";
     try {
-      await prisma.inboxMessage.create({
-        data: {
+      await createLedgeredInboxMessage(
+        {
           waJid,
           waNumber,
           channel,
@@ -91,7 +125,8 @@ export async function logInboxMediaIfPresent(
           senderNumber: group?.senderNumber,
           senderName: group?.senderName,
         },
-      });
+        null
+      );
     } catch (err) {
       logger.warn({ err, waJid }, "Gagal mencatat catatan foto/video sekali lihat");
     }
@@ -144,8 +179,13 @@ export async function logInboxMediaIfPresent(
     const fileName = `${randomUUID()}.${ext}`;
     await fs.promises.writeFile(path.join(destDir, fileName), encryptBuffer(buffer));
 
-    await prisma.inboxMessage.create({
-      data: {
+    // Sidik jari (SHA-256) isi ASLI berkas (sebelum dienkripsi) - direkam ke ledger supaya
+    // verifikasi nanti bisa mendeteksi kalau berkas di disk pernah ditukar/diubah (dekripsi
+    // ulang lalu bandingkan hash-nya, lihat verify-ledger di sisi web).
+    const attachmentSha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+
+    await createLedgeredInboxMessage(
+      {
         waJid,
         waNumber,
         channel,
@@ -160,7 +200,8 @@ export async function logInboxMediaIfPresent(
         senderNumber: group?.senderNumber,
         senderName: group?.senderName,
       },
-    });
+      attachmentSha256
+    );
   } catch (err) {
     logger.warn({ err, waJid }, "Gagal menyimpan media warga ke kotak masuk");
   }

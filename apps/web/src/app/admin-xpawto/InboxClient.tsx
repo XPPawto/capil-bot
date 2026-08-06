@@ -13,6 +13,7 @@ import {
   IconPaperclip,
   IconSearch,
   IconSend,
+  IconShield,
   IconUsers,
 } from "@/components/icons";
 
@@ -73,6 +74,15 @@ interface UnreadCounts {
   extra: Record<number, number>;
 }
 
+interface LedgerReport {
+  ok: boolean;
+  checkedAt: string;
+  chain: { ok: boolean; totalEntries: number; brokenAtId?: number; reason?: string };
+  rowMismatches: { inboxMessageId: number; field: string; expected: string | null; actual: string | null }[];
+  fileMismatches: { inboxMessageId: number; reason: string }[];
+  attachmentsChecked: number;
+}
+
 const LIST_POLL_MS = 6000;
 const THREAD_POLL_MS = 3000;
 const STATUS_POLL_MS = 2500;
@@ -89,6 +99,38 @@ function MessageStatusTick({ status }: { status: string | null }) {
   if (status === "DELIVERED") return <IconCheckAll className="h-3.5 w-3.5 shrink-0 text-ink-faint" />;
   if (status === "SENT") return <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink-faint" />;
   return null;
+}
+
+// Badge "Terverifikasi" - bukti kriptografis (bukan sekadar klaim visual) bahwa riwayat Pesan
+// Masuk belum diubah di luar jalur resmi aplikasi ini. Klik untuk lihat laporan lengkapnya
+// (lib/accessControl.ts & @kelurahan/db/auditLedger.ts untuk mekanisme di baliknya).
+function LedgerBadge({ report, loading, onClick }: { report: LedgerReport | null; loading: boolean; onClick: () => void }) {
+  if (loading && !report) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex items-center gap-1 rounded-full border border-line bg-canvas px-2 py-0.5 text-[10px] font-medium text-ink-muted transition-colors active:scale-95"
+      >
+        <IconShield className="h-3 w-3 animate-pulse" />
+        Memeriksa...
+      </button>
+    );
+  }
+  const ok = report?.ok ?? false;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Lihat laporan verifikasi keaslian riwayat chat"
+      className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors active:scale-95 ${
+        ok ? "border-pastel-green bg-pastel-green text-pastel-green-ink" : "border-pastel-red bg-pastel-red text-pastel-red-ink"
+      }`}
+    >
+      <IconShield className="h-3 w-3" />
+      {ok ? "Terverifikasi" : "Bermasalah"}
+    </button>
+  );
 }
 
 function UnreadBadge({ count }: { count: number }) {
@@ -162,6 +204,43 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
   const [forceReconnectScreen, setForceReconnectScreen] = useState(false);
   // Lihat foto/stiker langsung di halaman (lightbox) - tidak lagi membuka tab baru.
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+
+  // ---- badge "Terverifikasi" - bukti keaslian riwayat chat (lihat LedgerBadge) ----
+  const [ledgerReport, setLedgerReport] = useState<LedgerReport | null>(null);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [showLedgerModal, setShowLedgerModal] = useState(false);
+
+  const runLedgerVerification = useCallback(async () => {
+    setLedgerLoading(true);
+    try {
+      const res = await fetch("/api/inbox/verify-ledger");
+      if (res.ok) {
+        const data: LedgerReport = await res.json();
+        setLedgerReport(data);
+      }
+    } catch {
+      // ditinggalkan diam - badge tetap menampilkan hasil terakhir yang berhasil (kalau ada)
+    } finally {
+      setLedgerLoading(false);
+    }
+  }, []);
+
+  // Diperiksa otomatis sekali saat halaman dibuka, supaya badge-nya langsung berarti tanpa
+  // perlu klik dulu - re-verifikasi penuh tetap tersedia manual dari dalam modal laporannya.
+  useEffect(() => {
+    runLedgerVerification();
+  }, [runLedgerVerification]);
+
+  function downloadLedgerReport() {
+    if (!ledgerReport) return;
+    const blob = new Blob([JSON.stringify(ledgerReport, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `laporan-verifikasi-${ledgerReport.checkedAt.replace(/[:.]/g, "-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   useEffect(() => {
     if (!lightboxUrl) return;
@@ -631,7 +710,10 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
         }`}
       >
         <div className="border-b border-line px-4 py-3.5">
-          <h1 className="font-serif text-lg italic tracking-tight text-ink">Pesan Masuk</h1>
+          <div className="flex items-center justify-between gap-2">
+            <h1 className="font-serif text-lg italic tracking-tight text-ink">Pesan Masuk</h1>
+            <LedgerBadge report={ledgerReport} loading={ledgerLoading} onClick={() => setShowLedgerModal(true)} />
+          </div>
           <div className="mt-2.5 flex flex-wrap items-center gap-1 rounded-lg border border-line bg-canvas p-1">
             <button
               type="button"
@@ -1243,6 +1325,110 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
             onClick={(e) => e.stopPropagation()}
             className="max-h-full max-w-full rounded-lg object-contain"
           />
+        </div>
+      )}
+
+      {/* ---------- Laporan verifikasi keaslian riwayat chat ---------- */}
+      {showLedgerModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setShowLedgerModal(false)}>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-xl border border-line bg-surface p-5 shadow-lg"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <IconShield className={`h-5 w-5 ${ledgerReport?.ok ? "text-pastel-green-ink" : "text-pastel-red-ink"}`} />
+                <h2 className="font-serif text-base italic tracking-tight text-ink">Verifikasi Keaslian Chat</h2>
+              </div>
+              <button type="button" onClick={() => setShowLedgerModal(false)} aria-label="Tutup" className="text-ink-muted hover:text-ink">
+                <IconClose className="h-4 w-4" />
+              </button>
+            </div>
+
+            {!ledgerReport ? (
+              <p className="text-sm text-ink-muted">Memuat laporan...</p>
+            ) : (
+              <div className="space-y-3 text-sm">
+                <div
+                  className={`rounded-lg px-3 py-2.5 text-xs font-medium ${
+                    ledgerReport.ok ? "bg-pastel-green text-pastel-green-ink" : "bg-pastel-red text-pastel-red-ink"
+                  }`}
+                >
+                  {ledgerReport.ok
+                    ? "Riwayat chat utuh - tidak ada satu pun baris atau berkas lampiran yang terdeteksi diubah di luar jalur resmi aplikasi ini."
+                    : "Ditemukan ketidaksesuaian - lihat rincian di bawah."}
+                </div>
+
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                  <dt className="text-ink-muted">Diperiksa</dt>
+                  <dd className="text-ink">{new Date(ledgerReport.checkedAt).toLocaleString("id-ID")}</dd>
+                  <dt className="text-ink-muted">Entri ledger</dt>
+                  <dd className="text-ink">{ledgerReport.chain.totalEntries.toLocaleString("id-ID")}</dd>
+                  <dt className="text-ink-muted">Lampiran diperiksa</dt>
+                  <dd className="text-ink">{ledgerReport.attachmentsChecked.toLocaleString("id-ID")}</dd>
+                  <dt className="text-ink-muted">Rantai hash</dt>
+                  <dd className={ledgerReport.chain.ok ? "text-pastel-green-ink" : "text-pastel-red-ink"}>
+                    {ledgerReport.chain.ok ? "Utuh" : `Putus di entri #${ledgerReport.chain.brokenAtId}`}
+                  </dd>
+                </dl>
+
+                {!ledgerReport.chain.ok && ledgerReport.chain.reason && (
+                  <p className="rounded-md bg-pastel-red px-2.5 py-2 text-xs text-pastel-red-ink">{ledgerReport.chain.reason}</p>
+                )}
+
+                {ledgerReport.rowMismatches.length > 0 && (
+                  <div className="rounded-md border border-pastel-red bg-pastel-red/40 p-2.5">
+                    <p className="mb-1 text-xs font-medium text-pastel-red-ink">Baris pesan tidak cocok ({ledgerReport.rowMismatches.length}):</p>
+                    <ul className="space-y-1 text-[11px] text-pastel-red-ink">
+                      {ledgerReport.rowMismatches.slice(0, 10).map((m, i) => (
+                        <li key={i}>
+                          Pesan #{m.inboxMessageId} - field &quot;{m.field}&quot; seharusnya berbeda dari yang tersimpan sekarang
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {ledgerReport.fileMismatches.length > 0 && (
+                  <div className="rounded-md border border-pastel-red bg-pastel-red/40 p-2.5">
+                    <p className="mb-1 text-xs font-medium text-pastel-red-ink">Berkas lampiran bermasalah ({ledgerReport.fileMismatches.length}):</p>
+                    <ul className="space-y-1 text-[11px] text-pastel-red-ink">
+                      {ledgerReport.fileMismatches.slice(0, 10).map((m, i) => (
+                        <li key={i}>
+                          Pesan #{m.inboxMessageId} - {m.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <p className="text-[11px] leading-relaxed text-ink-faint">
+                  Setiap pesan/media dicatat ke buku besar berantai (hash chain) terenkripsi HMAC saat pertama diterima/dikirim - mengubah isinya
+                  langsung di database, tanpa lewat aplikasi ini, akan membuat pemeriksaan ini gagal. Riwayat dari sebelum fitur ini aktif dicatat
+                  lewat backfill satu kali (kondisinya saat itu), jadi tidak membuktikan keasliannya sebelum tanggal backfill - cuma menjamin tidak
+                  ada perubahan sejak saat itu.
+                </p>
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={runLedgerVerification}
+                    disabled={ledgerLoading}
+                    className="flex-1 rounded-md border border-line bg-canvas px-3 py-2 text-xs font-medium text-ink transition-colors hover:bg-surface-hover disabled:opacity-50"
+                  >
+                    {ledgerLoading ? "Memeriksa..." : "Verifikasi Ulang"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadLedgerReport}
+                    className="flex-1 rounded-md bg-ink px-3 py-2 text-xs font-medium text-canvas transition-colors hover:opacity-90"
+                  >
+                    Unduh Laporan
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

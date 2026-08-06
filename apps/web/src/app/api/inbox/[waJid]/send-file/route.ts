@@ -1,7 +1,9 @@
+import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { requireVerifiedAdmin } from "@/lib/accessControl";
 import { sendInboxFile } from "@/lib/botClient";
 import { prisma } from "@/lib/prisma";
+import { appendLedgerEntry } from "@kelurahan/db";
 import type { InboxChannel } from "@prisma/client";
 
 const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "application/pdf"]);
@@ -74,7 +76,7 @@ export async function POST(
     return NextResponse.json({ error: result.error ?? "send_failed" }, { status: 502 });
   }
 
-  await prisma.inboxMessage.create({
+  const row = await prisma.inboxMessage.create({
     data: {
       waJid: decodedWaJid,
       waNumber,
@@ -87,6 +89,33 @@ export async function POST(
       status: result.waMessageId ? "SENT" : undefined,
     },
   });
+
+  // Sama seperti ../messages/route.ts - jejak ledger wajib ada untuk setiap baris, termasuk
+  // yang dibuat dari sisi web ini. Sidik jari isi file yang dikirim ikut dicatat sebagai
+  // metadata (baris ini sendiri tidak menyimpan file-nya ke disk - cuma catatan teks).
+  try {
+    await appendLedgerEntry("MESSAGE_CREATED", row.id, {
+      waJid: row.waJid,
+      waNumber: row.waNumber,
+      channel: row.channel,
+      extraAccountId: row.extraAccountId,
+      direction: row.direction,
+      message: row.message,
+      attachmentPath: row.attachmentPath,
+      attachmentMimeType: row.attachmentMimeType,
+      attachmentSha256: crypto.createHash("sha256").update(buffer).digest("hex"),
+      isGroup: row.isGroup,
+      isChannel: row.isChannel,
+      groupName: row.groupName,
+      senderNumber: row.senderNumber,
+      senderName: row.senderName,
+      adminId: row.adminId,
+      waMessageId: row.waMessageId,
+      createdAt: row.createdAt.toISOString(),
+    });
+  } catch (err) {
+    console.error("GAGAL menulis jejak audit ledger untuk file yang dikirim dari dashboard", err);
+  }
 
   return NextResponse.json({ ok: true });
 }

@@ -347,6 +347,30 @@ model InboxMessage {
   @@index([createdAt])
 }
 
+/// Buku besar audit terenkripsi HMAC, berantai (setiap baris mengunci baris sebelumnya lewat
+/// prevHash) - APPEND-ONLY, tidak pernah di-UPDATE/DELETE oleh kode aplikasi mana pun. Dipakai
+/// membuktikan riwayat InboxMessage ("Pesan Masuk") tidak pernah diubah di luar jalur resmi
+/// aplikasi (mis. lewat SQL manual langsung ke database) - lihat packages/db/src/auditLedger.ts
+/// untuk mekanisme lengkap & keterbatasannya, dan lib/accessControl.ts (web) untuk pola
+/// HMAC/AES serupa yang sudah dipakai di proyek ini.
+///
+/// prevHash & hash SENGAJA @unique - ini yang membuat rantai aman ditulis dari DUA PROSES
+/// terpisah sekaligus (bot & web sama-sama bisa membuat InboxMessage baru) tanpa risiko
+/// bercabang: kalau dua proses sama-sama mencoba menyambung ke ujung rantai yang sama
+/// bersamaan, constraint unique di database menolak salah satunya (bukan diam-diam membuat
+/// dua cabang) - yang ditolak otomatis mencoba lagi ke ujung rantai yang sudah ter-update.
+model AuditLedgerEntry {
+  id             Int      @id @default(autoincrement())
+  eventType      String
+  inboxMessageId Int
+  payload        String   @db.Text
+  prevHash       String   @unique
+  hash           String   @unique
+  createdAt      DateTime @default(now())
+
+  @@index([inboxMessageId])
+}
+
 /// Catatan monitoring: input warga/pengunjung yang polanya menyerupai percobaan SQL
 /// Injection/XSS. Ini murni defense-in-depth logging (Prisma sudah parameterized query
 /// di semua tempat jadi tidak ada celah SQLi nyata) - tujuannya supaya admin bisa lihat

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireVerifiedAdmin } from "@/lib/accessControl";
 import { sendInboxReply } from "@/lib/botClient";
 import { prisma } from "@/lib/prisma";
+import { appendLedgerEntry } from "@kelurahan/db";
 import type { InboxChannel } from "@prisma/client";
 
 interface ThreadMessage {
@@ -157,7 +158,7 @@ export async function POST(
     return NextResponse.json({ error: "send_failed" }, { status: 502 });
   }
 
-  await prisma.inboxMessage.create({
+  const row = await prisma.inboxMessage.create({
     data: {
       waJid: decodedWaJid,
       waNumber,
@@ -170,6 +171,32 @@ export async function POST(
       status: sent.waMessageId ? "SENT" : undefined,
     },
   });
+
+  // Sama seperti apps/bot/src/conversation/messageLog.ts - setiap baris InboxMessage yang
+  // dibuat WAJIB dapat jejak ledger, termasuk yang dibuat dari sisi web ini (bukan cuma bot).
+  try {
+    await appendLedgerEntry("MESSAGE_CREATED", row.id, {
+      waJid: row.waJid,
+      waNumber: row.waNumber,
+      channel: row.channel,
+      extraAccountId: row.extraAccountId,
+      direction: row.direction,
+      message: row.message,
+      attachmentPath: row.attachmentPath,
+      attachmentMimeType: row.attachmentMimeType,
+      attachmentSha256: null,
+      isGroup: row.isGroup,
+      isChannel: row.isChannel,
+      groupName: row.groupName,
+      senderNumber: row.senderNumber,
+      senderName: row.senderName,
+      adminId: row.adminId,
+      waMessageId: row.waMessageId,
+      createdAt: row.createdAt.toISOString(),
+    });
+  } catch (err) {
+    console.error("GAGAL menulis jejak audit ledger untuk balasan dashboard", err);
+  }
 
   return NextResponse.json({ ok: true });
 }

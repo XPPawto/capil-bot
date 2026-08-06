@@ -1,4 +1,5 @@
-import { prisma, type InboxChannel } from "@kelurahan/db";
+import { prisma, appendLedgerEntry, type InboxChannel, type InboxMessage } from "@kelurahan/db";
+import { logger } from "../logger";
 
 /**
  * Dipanggil saat warga chat bebas di luar alur formulir (bot tidak mengenali sebagai
@@ -19,6 +20,42 @@ export async function logInboundIfActiveRequest(waJid: string, text: string): Pr
   await prisma.requestMessage.create({
     data: { requestId: active.id, direction: "INBOUND", message: trimmed },
   });
+}
+
+/**
+ * Setiap baris InboxMessage yang dibuat WAJIB lewat fungsi ini (bukan prisma.inboxMessage.create
+ * langsung) - supaya tidak ada satu pun baris yang lolos tanpa jejak ledger (lihat
+ * @kelurahan/db/auditLedger.ts). Kegagalan menulis ledger DICATAT SEBAGAI ERROR (bukan cuma
+ * warning) supaya kelihatan jelas kalau perlu perhatian manual - tapi TIDAK membatalkan baris
+ * InboxMessage yang sudah berhasil dibuat (mencatat chat warga selalu lebih prioritas daripada
+ * fitur audit di atasnya).
+ */
+async function createLedgeredInboxMessage(data: Parameters<typeof prisma.inboxMessage.create>[0]["data"]): Promise<InboxMessage> {
+  const row = await prisma.inboxMessage.create({ data });
+  try {
+    await appendLedgerEntry("MESSAGE_CREATED", row.id, {
+      waJid: row.waJid,
+      waNumber: row.waNumber,
+      channel: row.channel,
+      extraAccountId: row.extraAccountId,
+      direction: row.direction,
+      message: row.message,
+      attachmentPath: row.attachmentPath,
+      attachmentMimeType: row.attachmentMimeType,
+      attachmentSha256: null,
+      isGroup: row.isGroup,
+      isChannel: row.isChannel,
+      groupName: row.groupName,
+      senderNumber: row.senderNumber,
+      senderName: row.senderName,
+      adminId: row.adminId,
+      waMessageId: row.waMessageId,
+      createdAt: row.createdAt.toISOString(),
+    });
+  } catch (err) {
+    logger.error({ err, inboxMessageId: row.id }, "GAGAL menulis jejak audit ledger untuk pesan yang baru dicatat");
+  }
+  return row;
 }
 
 /**
@@ -76,21 +113,19 @@ export async function logInboxMessage(
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
-  await prisma.inboxMessage.create({
-    data: {
-      waJid,
-      waNumber,
-      channel,
-      extraAccountId,
-      direction: "INBOUND",
-      message: trimmed,
-      isGroup: group?.isGroup ?? false,
-      isChannel: group?.isChannel ?? false,
-      groupName: group?.groupName,
-      senderNumber: group?.senderNumber,
-      senderName: group?.senderName,
-      waMessageId,
-    },
+  await createLedgeredInboxMessage({
+    waJid,
+    waNumber,
+    channel,
+    extraAccountId,
+    direction: "INBOUND",
+    message: trimmed,
+    isGroup: group?.isGroup ?? false,
+    isChannel: group?.isChannel ?? false,
+    groupName: group?.groupName,
+    senderNumber: group?.senderNumber,
+    senderName: group?.senderName,
+    waMessageId,
   });
 }
 
@@ -112,21 +147,19 @@ export async function logOutboundFromDevice(
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
-  await prisma.inboxMessage.create({
-    data: {
-      waJid,
-      waNumber,
-      channel,
-      extraAccountId,
-      direction: "OUTBOUND",
-      message: trimmed,
-      isGroup: group?.isGroup ?? false,
-      isChannel: group?.isChannel ?? false,
-      groupName: group?.groupName,
-      senderNumber: group?.senderNumber,
-      senderName: group?.senderName,
-      waMessageId,
-    },
+  await createLedgeredInboxMessage({
+    waJid,
+    waNumber,
+    channel,
+    extraAccountId,
+    direction: "OUTBOUND",
+    message: trimmed,
+    isGroup: group?.isGroup ?? false,
+    isChannel: group?.isChannel ?? false,
+    groupName: group?.groupName,
+    senderNumber: group?.senderNumber,
+    senderName: group?.senderName,
+    waMessageId,
   });
 }
 
@@ -135,7 +168,9 @@ export async function logOutboundFromDevice(
  * cari baris InboxMessage yang waMessageId-nya PERSIS cocok (satu pesan asli = satu ID unik
  * dari WhatsApp) lalu update isinya DI TEMPAT. HANYA baris itu yang tersentuh - tidak ada
  * baris lain yang ikut berubah, dan kalau baris yang dicari tidak ketemu (mis. pesan aslinya
- * tidak pernah tercatat, atau dari sebelum fitur ini ada), tidak melakukan apa-apa.
+ * tidak pernah tercatat, atau dari sebelum fitur ini ada), tidak melakukan apa-apa. Edit ini
+ * SENDIRI juga dicatat sebagai entri ledger baru (MESSAGE_EDITED) - jadi perubahan yang sah
+ * ini tetap kelihatan jelas di riwayat audit, beda dari perubahan liar yang tidak lewat sini.
  */
 export async function applyMessageEdit(
   waJid: string,
@@ -146,11 +181,20 @@ export async function applyMessageEdit(
 ): Promise<boolean> {
   const trimmed = newText.trim();
   if (!trimmed) return false;
-  const result = await prisma.inboxMessage.updateMany({
+  const target = await prisma.inboxMessage.findFirst({
     where: channel === "EXTRA" ? { waJid, waMessageId, channel, extraAccountId } : { waJid, waMessageId, channel },
-    data: { message: trimmed, editedAt: new Date() },
+    select: { id: true },
   });
-  return result.count > 0;
+  if (!target) return false;
+
+  const editedAt = new Date();
+  await prisma.inboxMessage.update({ where: { id: target.id }, data: { message: trimmed, editedAt } });
+  try {
+    await appendLedgerEntry("MESSAGE_EDITED", target.id, { newMessage: trimmed, editedAt: editedAt.toISOString() });
+  } catch (err) {
+    logger.error({ err, inboxMessageId: target.id }, "GAGAL menulis jejak audit ledger untuk edit pesan");
+  }
+  return true;
 }
 
 /**
@@ -183,6 +227,11 @@ export async function updateMessageStatus(
   if (existing.status && STATUS_RANK[existing.status] >= STATUS_RANK[status]) return true;
 
   await prisma.inboxMessage.update({ where: { id: existing.id }, data: { status } });
+  try {
+    await appendLedgerEntry("STATUS_CHANGED", existing.id, { newStatus: status });
+  } catch (err) {
+    logger.error({ err, inboxMessageId: existing.id }, "GAGAL menulis jejak audit ledger untuk perubahan status pesan");
+  }
   return true;
 }
 
@@ -203,7 +252,12 @@ export async function logInboxCallEvent(
   extraAccountId?: number
 ): Promise<void> {
   const label = isVideo ? "Panggilan video" : "Panggilan suara";
-  await prisma.inboxMessage.create({
-    data: { waJid, waNumber, channel, extraAccountId, direction: "INBOUND", message: `[${label} masuk - ${outcome}]` },
+  await createLedgeredInboxMessage({
+    waJid,
+    waNumber,
+    channel,
+    extraAccountId,
+    direction: "INBOUND",
+    message: `[${label} masuk - ${outcome}]`,
   });
 }

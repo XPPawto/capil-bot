@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/apiGuard";
 import { sendInboxReply } from "@/lib/botClient";
 import { prisma } from "@/lib/prisma";
+import type { InboxChannel } from "@prisma/client";
 
 interface ThreadMessage {
   id: string;
@@ -9,14 +10,23 @@ interface ThreadMessage {
   message: string;
   createdAt: string;
   adminName: string | null;
+  attachmentUrl: string | null;
+  attachmentMimeType: string | null;
+  senderName: string | null;
+  senderNumber: string | null;
+}
+
+function channelFrom(value: string | null): InboxChannel {
+  return value === "SECONDARY" ? "SECONDARY" : "SERVICE";
 }
 
 /**
- * Dipoll berkala oleh halaman Pesan Masuk. Menggabungkan dua sumber: InboxMessage (semua
- * pesan mentah sejak fitur ini ada) dan RequestMessage (percakapan bebas lama yang terjadi
- * selagi warga punya Request aktif, dari sebelum fitur ini dibangun) - supaya histori yang
- * MEMANG pernah tersimpan tetap kelihatan utuh, bukan cuma yang baru. ?since=<ISO date>
- * membatasi ke pesan yang lebih baru dari yang sudah dipegang klien.
+ * Dipoll berkala oleh halaman Pesan Masuk. Untuk channel SERVICE, menggabungkan dua sumber:
+ * InboxMessage (semua pesan mentah sejak fitur ini ada) dan RequestMessage (percakapan bebas
+ * lama yang terjadi selagi warga punya Request aktif, dari sebelum fitur ini dibangun) -
+ * supaya histori yang MEMANG pernah tersimpan tetap kelihatan utuh. Channel SECONDARY (nomor
+ * kedua, bukan bot) tidak pernah punya Request sama sekali, jadi cukup InboxMessage saja.
+ * ?since=<ISO date> membatasi ke pesan yang lebih baru dari yang sudah dipegang klien.
  */
 export async function GET(
   req: NextRequest,
@@ -29,21 +39,24 @@ export async function GET(
   const decodedWaJid = decodeURIComponent(waJid);
   const since = req.nextUrl.searchParams.get("since");
   const sinceDate = since ? new Date(since) : undefined;
+  const channel = channelFrom(req.nextUrl.searchParams.get("channel"));
 
   const [inboxRows, requestRows] = await Promise.all([
     prisma.inboxMessage.findMany({
-      where: { waJid: decodedWaJid, ...(sinceDate ? { createdAt: { gt: sinceDate } } : {}) },
+      where: { waJid: decodedWaJid, channel, ...(sinceDate ? { createdAt: { gt: sinceDate } } : {}) },
       orderBy: { createdAt: "asc" },
       include: { admin: true },
     }),
-    prisma.requestMessage.findMany({
-      where: {
-        request: { waJid: decodedWaJid },
-        ...(sinceDate ? { createdAt: { gt: sinceDate } } : {}),
-      },
-      orderBy: { createdAt: "asc" },
-      include: { admin: true },
-    }),
+    channel === "SERVICE"
+      ? prisma.requestMessage.findMany({
+          where: {
+            request: { waJid: decodedWaJid },
+            ...(sinceDate ? { createdAt: { gt: sinceDate } } : {}),
+          },
+          orderBy: { createdAt: "asc" },
+          include: { admin: true },
+        })
+      : Promise.resolve([]),
   ]);
 
   const messages: ThreadMessage[] = [
@@ -53,6 +66,10 @@ export async function GET(
       message: m.message,
       createdAt: m.createdAt.toISOString(),
       adminName: m.admin?.name ?? null,
+      attachmentUrl: m.attachmentPath ? `/api/inbox/attachment/i${m.id}` : null,
+      attachmentMimeType: m.attachmentMimeType ?? null,
+      senderName: m.senderName ?? null,
+      senderNumber: m.senderNumber ?? null,
     })),
     ...requestRows.map((m) => ({
       id: `r${m.id}`,
@@ -60,6 +77,10 @@ export async function GET(
       message: m.message,
       createdAt: m.createdAt.toISOString(),
       adminName: m.admin?.name ?? null,
+      attachmentUrl: m.attachmentPath ? `/api/inbox/attachment/r${m.id}` : null,
+      attachmentMimeType: m.attachmentMimeType ?? null,
+      senderName: null,
+      senderNumber: null,
     })),
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
@@ -77,15 +98,19 @@ export async function POST(
   const decodedWaJid = decodeURIComponent(waJid);
   const body = await req.json().catch(() => ({}));
   const message = typeof body?.message === "string" ? body.message.trim() : "";
+  const channel = channelFrom(typeof body?.channel === "string" ? body.channel : null);
   if (!message) {
     return NextResponse.json({ error: "empty_message" }, { status: 400 });
   }
 
-  // Wajib ambil alih dulu - sama seperti chat di halaman detail pengajuan, supaya bot
-  // tidak ikut auto-reply ke nomor ini bersamaan dengan balasan manual petugas.
-  const takeover = await prisma.humanTakeover.findUnique({ where: { waJid: decodedWaJid } });
-  if (!takeover) {
-    return NextResponse.json({ error: "takeover_required" }, { status: 409 });
+  // Wajib ambil alih dulu - tapi HANYA untuk nomor layanan (ada bot yang bisa dialihkan
+  // dari mode otomatis). Nomor kedua tidak punya balasan otomatis sama sekali, jadi bisa
+  // langsung dibalas kapan saja.
+  if (channel === "SERVICE") {
+    const takeover = await prisma.humanTakeover.findUnique({ where: { waJid: decodedWaJid } });
+    if (!takeover) {
+      return NextResponse.json({ error: "takeover_required" }, { status: 409 });
+    }
   }
 
   // waNumber diambil dari sumber mana pun yang sudah ada catatannya untuk waJid ini.
@@ -99,10 +124,10 @@ export async function POST(
   }
 
   await prisma.inboxMessage.create({
-    data: { waJid: decodedWaJid, waNumber, direction: "OUTBOUND", message, adminId: guard.admin.id },
+    data: { waJid: decodedWaJid, waNumber, channel, direction: "OUTBOUND", message, adminId: guard.admin.id },
   });
 
-  const sent = await sendInboxReply(decodedWaJid, message);
+  const sent = await sendInboxReply(decodedWaJid, message, channel);
   if (!sent) {
     return NextResponse.json({ error: "send_failed" }, { status: 502 });
   }

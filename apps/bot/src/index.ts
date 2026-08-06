@@ -7,6 +7,8 @@ import { startAbandonedConversationReminder } from "./jobs/remindAbandonedConver
 import { warmRequirementsCache } from "./conversation/requirements";
 import { startSocket } from "./wa/socket";
 import { markBotDisconnected } from "./wa/connection";
+import { startSecondarySocket } from "./wa/secondarySocket";
+import { markSecondaryDisconnected } from "./wa/secondaryConnection";
 
 async function main(): Promise<void> {
   startControlServer();
@@ -16,6 +18,13 @@ async function main(): Promise<void> {
   startAbandonedConversationReminder();
   warmRequirementsCache().catch((err) => logger.warn({ err }, "Gagal warm-up cache syarat, akan diisi lazy per-request"));
   await startSocket({ type: "qr" });
+  // Nomor kedua (bukan bot) - kalau sudah pernah ditautkan sebelumnya, ini otomatis
+  // menyambung ulang pakai kredensial tersimpan. Kalau belum pernah, cuma menunggu diam
+  // (QR baru dibuat kalau ada yang membuka tab akun kedua di /admin-xpawto dan menekan
+  // sambungkan) - lihat wa/secondarySocket.ts.
+  await startSecondarySocket({ type: "qr" }).catch((err) =>
+    logger.error({ err }, "Gagal memulai socket akun kedua")
+  );
   logger.info("Bot kelurahan siap. Jika belum tertaut, scan QR yang muncul di terminal atau lewat dashboard /bot.");
 }
 
@@ -32,6 +41,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Menerima sinyal shutdown, menandai bot terputus...");
   try {
     await markBotDisconnected();
+    await markSecondaryDisconnected();
   } catch (err) {
     logger.error({ err }, "Gagal menandai bot terputus saat shutdown");
   } finally {

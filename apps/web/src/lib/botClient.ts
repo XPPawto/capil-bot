@@ -109,11 +109,15 @@ export async function notifyTakeover(waJid: string, active: boolean): Promise<bo
  * Balasan bebas dari halaman Pesan Masuk - beda dari sendCustomMessage karena tidak
  * terikat pada Request, warga yang dibalas bisa jadi belum pernah mengajukan apa pun.
  */
-export async function sendInboxReply(waJid: string, message: string): Promise<boolean> {
+export async function sendInboxReply(
+  waJid: string,
+  message: string,
+  channel: "SERVICE" | "SECONDARY" = "SERVICE"
+): Promise<boolean> {
   try {
     const res = await callControlServer("/notify/inbox-reply", {
       method: "POST",
-      body: JSON.stringify({ waJid, message }),
+      body: JSON.stringify({ waJid, message, channel }),
     });
     return res.ok;
   } catch {
@@ -145,6 +149,55 @@ export async function sendFileToResident(
   } catch {
     return { ok: false, error: "bot_unreachable" };
   }
+}
+
+/**
+ * Kirim foto/dokumen ke warga dari halaman Pesan Masuk, tidak terikat Request tertentu.
+ * Sama seperti sendFileToResident, kegagalan dikembalikan apa adanya ke admin.
+ */
+export async function sendInboxFile(
+  waJid: string,
+  fileName: string,
+  mimeType: string,
+  fileBase64: string,
+  channel: "SERVICE" | "SECONDARY" = "SERVICE"
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await callControlServer("/notify/inbox-file", {
+      method: "POST",
+      body: JSON.stringify({ waJid, fileName, mimeType, fileBase64, channel }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { ok: false, error: data.error ?? "failed" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "bot_unreachable" };
+  }
+}
+
+/**
+ * Status/koneksi nomor KEDUA (perangkat tertaut manual, bukan bot layanan) - dipakai tab
+ * "Akun Kedua" di /admin-xpawto. Struktur identik dengan getBotStatus/connectBotQr/dst,
+ * cuma menembak endpoint /secondary/* di control server.
+ */
+export async function getSecondaryAccountStatus(): Promise<BotStatus> {
+  const res = await callControlServer("/secondary/status");
+  if (!res.ok) throw new Error("Gagal mengambil status akun kedua");
+  return res.json();
+}
+
+export async function connectSecondaryQr(): Promise<Response> {
+  return callControlServer("/secondary/connect-qr", { method: "POST" });
+}
+
+export async function connectSecondaryPairing(phoneNumber: string): Promise<Response> {
+  return callControlServer("/secondary/connect-pairing", { method: "POST", body: JSON.stringify({ phoneNumber }) });
+}
+
+export async function logoutSecondaryAccount(): Promise<Response> {
+  return callControlServer("/secondary/logout", { method: "POST" });
 }
 
 /** Mengembalikan alasan gagal (kalau ada) supaya bisa ditampilkan ke admin. */

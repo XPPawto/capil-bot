@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import type { InboxChannel } from "@prisma/client";
 
 export interface InboxConversation {
   waJid: string;
@@ -7,6 +8,9 @@ export interface InboxConversation {
   lastDirection: "INBOUND" | "OUTBOUND";
   lastAt: string;
   takeoverActive: boolean;
+  isGroup: boolean;
+  groupName: string | null;
+  lastSenderName: string | null;
 }
 
 /**
@@ -21,23 +25,38 @@ export interface InboxConversation {
  * (tabel RequestMessage) - itu digabung di sini apa adanya. Warga yang chat tanpa pernah
  * punya Request aktif dan sebelum fitur ini ada TIDAK bisa dimunculkan lagi - teksnya
  * memang tidak pernah tersimpan di mana pun.
+ *
+ * `channel` memisahkan percakapan lewat nomor layanan (SERVICE, ada alur Request/bot) dari
+ * nomor kedua (SECONDARY, murni perangkat tertaut manual - tidak ada Request sama sekali,
+ * jadi RequestMessage tidak pernah ikut digabung untuk channel ini). Grup WA (isGroup) cuma
+ * pernah muncul di channel SECONDARY - handler nomor layanan sengaja tidak memproses grup.
  */
-export async function getInboxConversations(): Promise<InboxConversation[]> {
+export async function getInboxConversations(channel: InboxChannel = "SERVICE"): Promise<InboxConversation[]> {
   const [recentInbox, requestsWithMessages] = await Promise.all([
-    prisma.inboxMessage.findMany({ orderBy: { createdAt: "desc" }, take: 1000 }),
-    prisma.request.findMany({
-      where: { messages: { some: {} } },
-      select: {
-        waJid: true,
-        waNumber: true,
-        messages: { orderBy: { createdAt: "desc" }, take: 1 },
-      },
-    }),
+    prisma.inboxMessage.findMany({ where: { channel }, orderBy: { createdAt: "desc" }, take: 1000 }),
+    channel === "SERVICE"
+      ? prisma.request.findMany({
+          where: { messages: { some: {} } },
+          select: {
+            waJid: true,
+            waNumber: true,
+            messages: { orderBy: { createdAt: "desc" }, take: 1 },
+          },
+        })
+      : Promise.resolve([]),
   ]);
 
   const latestByWaJid = new Map<
     string,
-    { waNumber: string; lastMessage: string; lastDirection: "INBOUND" | "OUTBOUND"; lastAt: Date }
+    {
+      waNumber: string;
+      lastMessage: string;
+      lastDirection: "INBOUND" | "OUTBOUND";
+      lastAt: Date;
+      isGroup: boolean;
+      groupName: string | null;
+      lastSenderName: string | null;
+    }
   >();
 
   for (const m of recentInbox) {
@@ -48,6 +67,9 @@ export async function getInboxConversations(): Promise<InboxConversation[]> {
       lastMessage: m.message,
       lastDirection: m.direction,
       lastAt: m.createdAt,
+      isGroup: m.isGroup,
+      groupName: m.groupName,
+      lastSenderName: m.senderName,
     });
   }
 
@@ -61,6 +83,9 @@ export async function getInboxConversations(): Promise<InboxConversation[]> {
       lastMessage: last.message,
       lastDirection: last.direction,
       lastAt: last.createdAt,
+      isGroup: false,
+      groupName: null,
+      lastSenderName: null,
     });
   }
 
@@ -72,8 +97,18 @@ export async function getInboxConversations(): Promise<InboxConversation[]> {
       lastDirection: v.lastDirection,
       lastAt: v.lastAt.toISOString(),
       takeoverActive: false,
+      isGroup: v.isGroup,
+      groupName: v.groupName,
+      lastSenderName: v.lastSenderName,
     }))
     .sort((a, b) => new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime());
+
+  // Konsep "ambil alih" cuma berlaku untuk nomor layanan (ada bot yang bisa dialihkan
+  // dari mode otomatis) - nomor kedua tidak pernah punya balasan otomatis sama sekali,
+  // jadi selalu bisa dibalas langsung tanpa toggle apa pun.
+  if (channel !== "SERVICE") {
+    return conversations.map((c) => ({ ...c, takeoverActive: true }));
+  }
 
   const takeovers = await prisma.humanTakeover.findMany({
     where: { waJid: { in: conversations.map((c) => c.waJid) } },

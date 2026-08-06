@@ -30,6 +30,15 @@ enum MessageDirection {
   INBOUND
 }
 
+/// Nomor WA mana yang terlibat dalam sebuah pesan kotak masuk - SERVICE untuk nomor bot
+/// layanan (BotSession), SECONDARY untuk nomor kedua yang murni perangkat tertaut manual
+/// (SecondaryAccountSession). Dipakai memisahkan dua percakapan yang kebetulan sama-sama
+/// dengan warga yang sama tapi lewat nomor kami yang berbeda.
+enum InboxChannel {
+  SERVICE
+  SECONDARY
+}
+
 /// Akun petugas/admin dashboard.
 model Admin {
   id               Int             @id @default(autoincrement())
@@ -73,6 +82,19 @@ model Session {
 
 /// Singleton (id selalu 1) yang merefleksikan status koneksi nomor WA bot untuk dashboard.
 model BotSession {
+  id              Int       @id @default(1)
+  waJid           String?
+  phoneNumber     String?
+  connected       Boolean   @default(false)
+  lastConnectedAt DateTime?
+  updatedAt       DateTime  @updatedAt
+}
+
+/// Nomor WA kedua yang ditautkan terpisah dari nomor layanan (BotSession) - dipakai murni
+/// sebagai perangkat tertaut manual (bukan bot, tidak menjalankan alur menu/otomatis apa
+/// pun), supaya petugas bisa chat langsung dari /admin-xpawto tapi tetap tercatat terpusat.
+/// Singleton sama seperti BotSession.
+model SecondaryAccountSession {
   id              Int       @id @default(1)
   waJid           String?
   phoneNumber     String?
@@ -238,16 +260,28 @@ model Broadcast {
 /// "Pesan Masuk" di dashboard supaya petugas bisa lihat & balas warga yang chat di luar alur
 /// formulir (mis. baru sekadar tanya-tanya, belum pernah mengajukan apa pun).
 model InboxMessage {
-  id        Int              @id @default(autoincrement())
-  waJid     String
-  waNumber  String
-  direction MessageDirection
-  message   String           @db.Text
-  adminId   Int?
-  admin     Admin?           @relation(fields: [adminId], references: [id])
-  createdAt DateTime         @default(now())
+  id                 Int              @id @default(autoincrement())
+  waJid              String
+  waNumber           String
+  channel            InboxChannel     @default(SERVICE)
+  direction          MessageDirection
+  message            String           @db.Text
+  attachmentPath     String?
+  attachmentMimeType String?
+  // Grup WA (cuma berlaku untuk channel SECONDARY - lihat secondaryMessageHandler.ts).
+  // waJid untuk pesan grup adalah JID grupnya sendiri (...@g.us), bukan JID satu orang -
+  // senderNumber/senderName menyimpan siapa yang benar-benar mengirim pesan itu di dalam
+  // grup, karena satu "percakapan" grup berisi banyak pengirim berbeda.
+  isGroup            Boolean          @default(false)
+  groupName          String?
+  senderNumber       String?
+  senderName         String?
+  adminId            Int?
+  admin              Admin?           @relation(fields: [adminId], references: [id])
+  createdAt          DateTime         @default(now())
 
   @@index([waJid])
+  @@index([channel])
   @@index([createdAt])
 }
 

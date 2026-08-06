@@ -1,6 +1,7 @@
 import type { WACallEvent, WASocket } from "@whiskeysockets/baileys";
 import { logger } from "../logger";
 import { humanSendMessage } from "../wa/humanSend";
+import { logInboxCallEvent } from "./messageLog";
 
 const CALL_REJECTED_TEXT =
   "Mohon maaf, nomor ini adalah *Bot Otomatis Kelurahan* dan tidak dapat menerima panggilan suara/video. " +
@@ -23,6 +24,12 @@ export async function handleIncomingCalls(sock: WASocket, events: WACallEvent[])
     handledCallIds.add(call.id);
     // Cegah Set tumbuh tanpa batas selama proses hidup lama - id lama tidak perlu diingat.
     setTimeout(() => handledCallIds.delete(call.id), 5 * 60_000);
+
+    // Dicatat dulu (sebelum reject) supaya tetap tercatat di Pesan Masuk meski langkah
+    // reject/kirim-pesan di bawah gagal karena sebab apa pun.
+    logInboxCallEvent(call.from, call.from.split("@")[0], Boolean(call.isVideo)).catch((err) =>
+      logger.warn({ err, callId: call.id, from: call.from }, "Gagal mencatat panggilan masuk ke kotak masuk")
+    );
 
     try {
       await sock.rejectCall(call.id, call.from);

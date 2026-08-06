@@ -156,3 +156,11 @@ export function IconLogout({ className = base }: IconProps) {
     </svg>
   );
 }
+
+export function IconPaperclip({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M17 8.5 9.7 15.8a3 3 0 1 1-4.24-4.24l7.8-7.8a2 2 0 1 1 2.83 2.83l-7.5 7.5a1 1 0 1 1-1.42-1.41l6.9-6.9" />
+    </svg>
+  );
+}

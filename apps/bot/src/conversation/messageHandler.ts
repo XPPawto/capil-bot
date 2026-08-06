@@ -7,6 +7,7 @@ import { humanSendMessage } from "../wa/humanSend";
 import { isHumanTakeoverActive } from "./humanTakeover";
 import { logInboundIfActiveRequest, logInboxMessage } from "./messageLog";
 import { handleVoiceNote } from "../media/voiceNote";
+import { logInboxMediaIfPresent } from "../media/inboxMedia";
 
 interface MessagesUpsertPayload {
   messages: WAMessage[];
@@ -22,7 +23,7 @@ interface MessagesUpsertPayload {
  * internal. waJid untuk membalas pesan tetap pakai remoteJid asli (jangan diubah) - WhatsApp
  * mengharuskan alamat balasan sama persis dengan yang dipakai kontak untuk mengirim.
  */
-function extractWaNumber(msg: WAMessage, jid: string): string {
+export function extractWaNumber(msg: WAMessage, jid: string): string {
   const senderPn = msg.key.senderPn;
   if (senderPn) {
     return senderPn.split("@")[0];
@@ -30,7 +31,7 @@ function extractWaNumber(msg: WAMessage, jid: string): string {
   return jid.split("@")[0];
 }
 
-function extractText(msg: WAMessage): string | undefined {
+export function extractText(msg: WAMessage): string | undefined {
   const raw = msg.message;
   if (!raw) return undefined;
   // Buka bungkus documentWithCaptionMessage/viewOnceMessage dkk dulu, sama seperti
@@ -68,6 +69,11 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
         logger.error({ err, jid }, "Gagal mencatat pesan ke kotak masuk")
       );
     }
+    // Foto/dokumen yang dikirim warga juga direkam ke kotak masuk (kalau ada) - lihat
+    // komentar di media/inboxMedia.ts untuk alasan ini tidak mengganggu alur syarat resmi.
+    logInboxMediaIfPresent(sock, msg, jid, waNumber).catch((err) =>
+      logger.error({ err, jid }, "Gagal mencatat media ke kotak masuk")
+    );
 
     try {
       // Petugas sedang ambil alih percakapan ini secara manual lewat dashboard - bot

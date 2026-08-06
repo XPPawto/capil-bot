@@ -13,6 +13,7 @@ import { config } from "../config";
 import { logger } from "../logger";
 import type { ConnectMode } from "./socket";
 import { handleExtraAccountIncomingMessages } from "../conversation/extraAccountMessageHandler";
+import { handleExtraAccountCalls } from "../conversation/extraAccountCallHandler";
 
 interface ExtraAccountRuntime {
   sock: WASocket | null;
@@ -175,7 +176,13 @@ export async function startExtraAccountSocket(accountId: number, mode: ConnectMo
         logger.error({ err, accountId }, "Gagal memproses pesan masuk akun ekstra")
       );
     });
-    // Sengaja TIDAK ada listener "call" - akun ekstra bukan bot, tidak auto-reject panggilan.
+    // Panggilan TIDAK ditolak otomatis (beda dari nomor layanan) - dibiarkan berdering
+    // normal supaya bisa benar-benar diangkat manusia, cuma hasil akhirnya dicatat.
+    sock.ev.on("call", (events) => {
+      handleExtraAccountCalls(sock, events, accountId).catch((err) =>
+        logger.error({ err, accountId }, "Gagal mencatat panggilan akun ekstra")
+      );
+    });
   } catch (err) {
     runtime.isConnecting = false;
     throw err;

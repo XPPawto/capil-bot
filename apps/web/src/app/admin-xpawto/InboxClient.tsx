@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relativeDuration } from "@/lib/format";
-import { IconChat, IconDocument, IconPaperclip, IconSearch, IconUsers } from "@/components/icons";
+import { IconArrowLeft, IconChat, IconClose, IconDocument, IconPaperclip, IconSearch, IconSend, IconUsers } from "@/components/icons";
 
 type Channel = "SERVICE" | "EXTRA";
 /** "SERVICE" = nomor bot layanan; angka = id salah satu akun ekstra (Akun Kedua, Ketiga, dst). */
@@ -133,10 +133,55 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
   const [addingAccount, setAddingAccount] = useState(false);
   const [newAccountLabel, setNewAccountLabel] = useState("");
   const [forceReconnectScreen, setForceReconnectScreen] = useState(false);
+  // Lihat foto/stiker langsung di halaman (lightbox) - tidak lagi membuka tab baru.
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!lightboxUrl) return;
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === "Escape") setLightboxUrl(null);
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [lightboxUrl]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const latestCreatedAtRef = useRef<string | undefined>(undefined);
+
+  // ---- swipe-untuk-kembali di HP: geser dari kiri ke kanan di panel thread untuk balik
+  // ke daftar percakapan, sama seperti aplikasi chat native (bukan cuma tombol "<-") ----
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [swipeOffsetPx, setSwipeOffsetPx] = useState(0);
+  const [isSwiping, setIsSwiping] = useState(false);
+
+  function handleThreadTouchStart(e: React.TouchEvent) {
+    const t = e.touches[0];
+    touchStartRef.current = { x: t.clientX, y: t.clientY };
+    setIsSwiping(false);
+  }
+
+  function handleThreadTouchMove(e: React.TouchEvent) {
+    if (!touchStartRef.current) return;
+    const t = e.touches[0];
+    const dx = t.clientX - touchStartRef.current.x;
+    const dy = t.clientY - touchStartRef.current.y;
+    // Cuma dianggap swipe horizontal kalau condong ke kanan dan lebih mendatar daripada
+    // vertikal - supaya scroll biasa (naik/turun baca chat) tidak salah kepicu jadi swipe.
+    if (dx > 12 && Math.abs(dx) > Math.abs(dy)) {
+      setIsSwiping(true);
+      setSwipeOffsetPx(Math.min(dx, 200));
+    }
+  }
+
+  function handleThreadTouchEnd() {
+    if (isSwiping && swipeOffsetPx > 70) {
+      setShowThreadOnMobile(false);
+    }
+    setIsSwiping(false);
+    setSwipeOffsetPx(0);
+    touchStartRef.current = null;
+  }
 
   const channel: Channel = accountKey === "SERVICE" ? "SERVICE" : "EXTRA";
   const extraAccountId = accountKey === "SERVICE" ? undefined : accountKey;
@@ -546,11 +591,16 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
   }
 
   return (
-    <div className="flex h-[calc(100vh-7.5rem)] min-h-[520px] flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-sm md:flex-row">
+    <div className="fixed inset-0 flex flex-col overflow-hidden bg-canvas md:flex-row">
       {/* ---------- Panel kiri: daftar percakapan ---------- */}
+      {/* Di HP, dua panel ini ditumpuk absolut & digeser pakai translate-x (bukan cuma
+          disembunyikan) supaya perpindahan antar-panel terasa seperti geser panel di
+          aplikasi chat native, bukan loncat instan. Di layar md+ kembali ke tata letak
+          dua kolom biasa (md:static menetralkan posisi absolut & transform-nya). Lebar
+          380px & susunan header/search/list meniru Telegram/WhatsApp Web. */}
       <div
-        className={`flex w-full shrink-0 flex-col border-line md:w-[320px] md:border-r ${
-          showThreadOnMobile ? "hidden md:flex" : "flex"
+        className={`absolute inset-0 z-10 flex w-full shrink-0 flex-col bg-surface transition-transform duration-300 ease-out md:static md:z-auto md:w-[380px] md:translate-x-0 md:border-r md:border-line ${
+          showThreadOnMobile ? "-translate-x-full" : "translate-x-0"
         }`}
       >
         <div className="border-b border-line px-4 py-3.5">
@@ -559,7 +609,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
             <button
               type="button"
               onClick={() => setAccountKey("SERVICE")}
-              className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
+              className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium transition-all active:scale-95 ${
                 accountKey === "SERVICE" ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
               }`}
             >
@@ -571,7 +621,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                 key={a.id}
                 type="button"
                 onClick={() => setAccountKey(a.id)}
-                className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium transition-all active:scale-95 ${
                   accountKey === a.id ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
                 }`}
               >
@@ -658,8 +708,8 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
           </div>
         ) : (
           <>
-            <div className="border-b border-line px-3 py-2.5">
-              <div className="flex items-center gap-2 rounded-lg border border-line bg-canvas px-2.5 py-1.5">
+            <div className="px-3 py-2.5">
+              <div className="flex items-center gap-2 rounded-full bg-canvas px-3.5 py-2">
                 <IconSearch className="h-4 w-4 shrink-0 text-ink-faint" />
                 <input
                   value={query}
@@ -687,16 +737,16 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                     key={c.waJid}
                     type="button"
                     onClick={() => selectConversation(c.waJid)}
-                    className={`flex w-full items-start gap-3 border-b border-line px-4 py-3 text-left transition-colors ${
+                    className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors active:scale-[0.98] active:bg-surface-hover ${
                       active ? "bg-pastel-blue" : "hover:bg-surface-hover"
                     }`}
                   >
                     <span
-                      className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                      className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
                         active ? "bg-surface text-pastel-blue-ink" : "bg-canvas text-ink-muted"
                       }`}
                     >
-                      {c.isGroup ? <IconUsers className="h-4 w-4" /> : initialsOf(c.waNumber)}
+                      {c.isGroup ? <IconUsers className="h-5 w-5" /> : initialsOf(c.waNumber)}
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center justify-between gap-2">
@@ -746,7 +796,15 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
       </div>
 
       {/* ---------- Panel kanan: thread percakapan, atau layar sambungkan akun ---------- */}
-      <div className={`flex min-w-0 flex-1 flex-col ${showThreadOnMobile ? "flex" : "hidden md:flex"}`}>
+      <div
+        onTouchStart={handleThreadTouchStart}
+        onTouchMove={handleThreadTouchMove}
+        onTouchEnd={handleThreadTouchEnd}
+        style={isSwiping ? { transform: `translateX(${swipeOffsetPx}px)` } : undefined}
+        className={`absolute inset-0 z-10 flex min-w-0 flex-1 flex-col bg-surface ${
+          isSwiping ? "" : "transition-transform duration-300 ease-out"
+        } md:static md:z-auto md:translate-x-0 ${showThreadOnMobile ? "translate-x-0" : "translate-x-full"}`}
+      >
         {addingAccount ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <span className="flex h-14 w-14 items-center justify-center rounded-full bg-canvas">
@@ -904,10 +962,10 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
               <button
                 type="button"
                 onClick={() => setShowThreadOnMobile(false)}
-                className="text-sm text-ink-muted hover:text-ink md:hidden"
+                className="-ml-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-muted transition-all hover:bg-surface-hover hover:text-ink active:scale-90 md:hidden"
                 aria-label="Kembali ke daftar"
               >
-                &larr;
+                <IconArrowLeft className="h-5 w-5" />
               </button>
               <div className="flex min-w-0 flex-1 items-center gap-2.5">
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-canvas text-xs font-semibold text-ink-muted">
@@ -940,7 +998,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                   type="button"
                   onClick={handleToggleTakeover}
                   disabled={togglingTakeover}
-                  className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                  className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100 ${
                     selected.takeoverActive
                       ? "bg-ink text-canvas hover:opacity-90"
                       : "border border-line text-ink hover:bg-surface-hover"
@@ -959,7 +1017,8 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
               {messages.map((m) => {
                 const isImage = Boolean(m.attachmentUrl && m.attachmentMimeType?.startsWith("image/"));
                 const isVideo = Boolean(m.attachmentUrl && m.attachmentMimeType?.startsWith("video/"));
-                const isOtherFile = Boolean(m.attachmentUrl && !isImage && !isVideo);
+                const isAudio = Boolean(m.attachmentUrl && m.attachmentMimeType?.startsWith("audio/"));
+                const isOtherFile = Boolean(m.attachmentUrl && !isImage && !isVideo && !isAudio);
                 // Stiker tersimpan sebagai image/webp (sama seperti foto) - dibedakan cuma
                 // dari labelnya, dirender lebih kecil & tanpa crop (bukan foto persegi panjang).
                 const isSticker = isImage && m.message === "[Stiker]";
@@ -970,17 +1029,20 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                   (isImage && (m.message === "[Foto]" || m.message === "[Stiker]")) ||
                   (isVideo && m.message === "[Video]") ||
                   (isOtherFile && m.message === "[Dokumen]");
+                const bubbleTextClass = m.direction === "OUTBOUND" ? "text-pastel-green-ink" : "text-ink";
                 return (
                   <div key={m.id} className={`flex flex-col ${m.direction === "OUTBOUND" ? "items-end" : "items-start"}`}>
                     <div
-                      className={`max-w-[75%] overflow-hidden rounded-2xl text-sm shadow-sm ${
-                        m.direction === "OUTBOUND"
-                          ? "rounded-tr-sm bg-ink text-canvas"
-                          : "rounded-tl-sm border border-line bg-surface text-ink"
-                      }`}
+                      className={`max-w-[80%] overflow-hidden rounded-2xl text-sm shadow-sm sm:max-w-[65%] ${
+                        m.direction === "OUTBOUND" ? "rounded-tr-sm bg-pastel-green" : "rounded-tl-sm bg-surface"
+                      } ${bubbleTextClass}`}
                     >
                       {isImage && (
-                        <a href={m.attachmentUrl!} target="_blank" rel="noopener noreferrer">
+                        <button
+                          type="button"
+                          onClick={() => setLightboxUrl(m.attachmentUrl)}
+                          className="block w-full cursor-zoom-in"
+                        >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={m.attachmentUrl!}
@@ -991,19 +1053,22 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                                 : "block max-h-72 w-full object-cover"
                             }
                           />
-                        </a>
+                        </button>
                       )}
                       {isVideo && (
                         <video src={m.attachmentUrl!} controls className="block max-h-72 w-full bg-canvas" />
+                      )}
+                      {isAudio && (
+                        <div className="px-2.5 pt-2.5">
+                          <audio src={m.attachmentUrl!} controls preload="metadata" className="h-9 w-56 max-w-full" />
+                        </div>
                       )}
                       {isOtherFile && (
                         <a
                           href={m.attachmentUrl!}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className={`flex items-center gap-2 px-3.5 py-2.5 underline-offset-2 hover:underline ${
-                            m.direction === "OUTBOUND" ? "text-canvas" : "text-ink"
-                          }`}
+                          className={`flex items-center gap-2 px-3.5 py-2.5 underline-offset-2 hover:underline ${bubbleTextClass}`}
                         >
                           <IconDocument className="h-5 w-5 shrink-0" />
                           <span className="truncate text-xs">Buka lampiran</span>
@@ -1017,9 +1082,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                             <p className="text-[11px] font-medium text-pastel-blue-ink">{m.senderName}</p>
                           )}
                           {!hideGenericLabel && (
-                            <p className="whitespace-pre-wrap">
-                              {linkifyText(m.message, m.direction === "OUTBOUND" ? "text-canvas" : "text-pastel-blue-ink")}
-                            </p>
+                            <p className="whitespace-pre-wrap">{linkifyText(m.message, "text-pastel-blue-ink")}</p>
                           )}
                         </div>
                       )}
@@ -1049,7 +1112,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
               </p>
             )}
 
-            <div className="flex gap-2 border-t border-line px-4 py-3">
+            <div className="flex items-end gap-2 bg-surface px-3 py-2.5">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1065,9 +1128,9 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                 onClick={() => fileInputRef.current?.click()}
                 disabled={!selected.takeoverActive || isDisconnected || sendingFile}
                 title="Kirim foto/dokumen"
-                className="flex shrink-0 items-center justify-center rounded-lg border border-line px-3 text-ink-muted transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+                className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink-muted transition-all hover:bg-surface-hover active:scale-90 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100"
               >
-                <IconPaperclip className="h-[18px] w-[18px]" />
+                <IconPaperclip className="h-5 w-5" />
               </button>
               <textarea
                 value={text}
@@ -1078,23 +1141,48 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                   isDisconnected
                     ? "Akun terputus - sambungkan ulang untuk membalas"
                     : selected.takeoverActive
-                      ? "Ketik balasan... (Enter untuk kirim)"
+                      ? "Ketik balasan..."
                       : "Ambil alih dulu untuk membalas"
                 }
                 rows={1}
-                className="flex-1 resize-none rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-faint"
+                className="max-h-32 flex-1 resize-none rounded-3xl bg-canvas px-4 py-2.5 text-sm text-ink outline-none transition-colors disabled:cursor-not-allowed disabled:text-ink-faint"
               />
               <button
                 onClick={handleSend}
                 disabled={!selected.takeoverActive || isDisconnected || sending || !text.trim()}
-                className="shrink-0 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
+                aria-label="Kirim"
+                className="mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-pastel-green text-pastel-green-ink transition-all hover:opacity-90 active:scale-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
               >
-                Kirim
+                <IconSend className="h-[18px] w-[18px] translate-x-[-1px]" />
               </button>
             </div>
           </>
         )}
       </div>
+
+      {/* ---------- Lightbox: lihat foto/stiker penuh tanpa pindah tab ---------- */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setLightboxUrl(null)}
+            aria-label="Tutup"
+            className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          >
+            <IconClose className="h-5 w-5" />
+          </button>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={lightboxUrl}
+            alt="Lampiran foto"
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-full max-w-full rounded-lg object-contain"
+          />
+        </div>
+      )}
     </div>
   );
 }

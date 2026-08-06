@@ -164,3 +164,21 @@ export function IconPaperclip({ className = base }: IconProps) {
     </svg>
   );
 }
+
+export function IconSend({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M4.5 12 19.5 4.5 15 19.5l-3.5-6-6-1z" />
+      <path d="M11.5 13.5 15 19.5" />
+    </svg>
+  );
+}
+
+export function IconArrowLeft({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M19 12H5" />
+      <path d="M11 6l-6 6 6 6" />
+    </svg>
+  );
+}

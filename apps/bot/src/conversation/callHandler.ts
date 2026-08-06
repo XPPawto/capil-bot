@@ -27,7 +27,7 @@ export async function handleIncomingCalls(sock: WASocket, events: WACallEvent[])
 
     // Dicatat dulu (sebelum reject) supaya tetap tercatat di Pesan Masuk meski langkah
     // reject/kirim-pesan di bawah gagal karena sebab apa pun.
-    logInboxCallEvent(call.from, call.from.split("@")[0], Boolean(call.isVideo)).catch((err) =>
+    logInboxCallEvent(call.from, call.from.split("@")[0], Boolean(call.isVideo), "ditolak otomatis").catch((err) =>
       logger.warn({ err, callId: call.id, from: call.from }, "Gagal mencatat panggilan masuk ke kotak masuk")
     );
 

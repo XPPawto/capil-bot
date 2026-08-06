@@ -96,12 +96,24 @@ export async function logOutboundFromDevice(
   });
 }
 
-/** Dicatat tiap ada panggilan suara/video masuk (yang otomatis ditolak - lihat callHandler.ts),
- * supaya kelihatan juga di Pesan Masuk sebagai bagian dari riwayat kontak orang itu dengan bot,
- * bukan cuma hilang begitu saja setelah ditolak. */
-export async function logInboxCallEvent(waJid: string, waNumber: string, isVideo: boolean): Promise<void> {
+/**
+ * Dicatat tiap ada panggilan suara/video masuk, supaya kelihatan di Pesan Masuk sebagai
+ * bagian dari riwayat kontak orang itu, bukan cuma hilang begitu saja. Nomor layanan
+ * (SERVICE) selalu menolak otomatis - lihat callHandler.ts, outcome-nya selalu "ditolak
+ * otomatis". Akun ekstra (EXTRA) TIDAK auto-reject (panggilan berdering normal di HP-nya,
+ * bisa benar-benar diangkat manusia) - lihat extraAccountCallHandler.ts, outcome-nya bisa
+ * "diangkat"/"ditolak"/"tidak dijawab" sesuai apa yang sungguh terjadi.
+ */
+export async function logInboxCallEvent(
+  waJid: string,
+  waNumber: string,
+  isVideo: boolean,
+  outcome: string,
+  channel: InboxChannel = "SERVICE",
+  extraAccountId?: number
+): Promise<void> {
   const label = isVideo ? "Panggilan video" : "Panggilan suara";
   await prisma.inboxMessage.create({
-    data: { waJid, waNumber, direction: "INBOUND", message: `[${label} masuk - ditolak otomatis]` },
+    data: { waJid, waNumber, channel, extraAccountId, direction: "INBOUND", message: `[${label} masuk - ${outcome}]` },
   });
 }

@@ -11,6 +11,8 @@ export interface InboxConversation {
   isGroup: boolean;
   groupName: string | null;
   lastSenderName: string | null;
+  /** Nama profil WA lawan bicara (bukan grup) - null kalau belum pernah terekam. */
+  contactName: string | null;
 }
 
 /**
@@ -59,7 +61,17 @@ export async function getInboxConversations(channel: InboxChannel = "SERVICE"): 
     }
   >();
 
+  // Nama kontak dilacak terpisah dari "pesan terakhir" - pesan terakhir bisa saja balasan
+  // KITA (tidak punya senderName), padahal kita tetap ingin tahu nama profil WA lawan
+  // bicaranya dari pesan MASUK mereka yang paling baru. recentInbox sudah terurut desc,
+  // jadi kemunculan pertama per waJid otomatis yang paling baru.
+  const contactNameByWaJid = new Map<string, string>();
+
   for (const m of recentInbox) {
+    if (!m.isGroup && m.direction === "INBOUND" && m.senderName && !contactNameByWaJid.has(m.waJid)) {
+      contactNameByWaJid.set(m.waJid, m.senderName);
+    }
+
     const existing = latestByWaJid.get(m.waJid);
     if (existing && existing.lastAt >= m.createdAt) continue;
     latestByWaJid.set(m.waJid, {
@@ -100,6 +112,7 @@ export async function getInboxConversations(channel: InboxChannel = "SERVICE"): 
       isGroup: v.isGroup,
       groupName: v.groupName,
       lastSenderName: v.lastSenderName,
+      contactName: contactNameByWaJid.get(waJid) ?? null,
     }))
     .sort((a, b) => new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime());
 

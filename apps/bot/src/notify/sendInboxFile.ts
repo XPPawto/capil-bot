@@ -4,7 +4,6 @@ import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
 import { getSecondarySocket } from "../wa/secondarySocket";
 import { humanSendMessage } from "../wa/humanSend";
-import { markAsSentByDashboard } from "../wa/sentMessageTracker";
 
 /**
  * Petugas kirim file (foto/dokumen) ke warga langsung dari halaman Pesan Masuk, tidak
@@ -29,11 +28,13 @@ export async function sendInboxFile(
   const buffer = Buffer.from(fileBase64, "base64");
   const realMimeType = detectRealMimeType(buffer) ?? claimedMimeType;
 
-  const sent =
-    realMimeType.startsWith("image/")
-      ? await humanSendMessage(sock, waJid, { image: buffer })
-      : await humanSendMessage(sock, waJid, { document: buffer, fileName, mimetype: realMimeType });
-  markAsSentByDashboard(sent?.key?.id);
+  // ID pesan ini sudah otomatis ditandai di sentMessageTracker oleh humanSendMessage
+  // sendiri sebelum dikirim - lihat wa/humanSend.ts.
+  if (realMimeType.startsWith("image/")) {
+    await humanSendMessage(sock, waJid, { image: buffer });
+  } else {
+    await humanSendMessage(sock, waJid, { document: buffer, fileName, mimetype: realMimeType });
+  }
 
   logger.info({ waJid, fileName, realMimeType }, "File terkirim ke warga lewat Pesan Masuk");
 }

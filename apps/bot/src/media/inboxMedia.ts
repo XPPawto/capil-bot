@@ -16,6 +16,12 @@ const EXT_BY_MIME: Record<string, string> = {
   "application/pdf": "pdf",
 };
 
+const EXT_BY_VIDEO_MIME: Record<string, string> = {
+  "video/mp4": "mp4",
+  "video/3gpp": "3gp",
+  "video/quicktime": "mov",
+};
+
 /**
  * Foto/dokumen yang dikirim warga direkam apa adanya ke Pesan Masuk (/admin-xpawto),
  * terlepas dari state percakapan yang sedang berjalan - mis. foto iseng, foto KTP yang
@@ -38,13 +44,14 @@ export async function logInboxMediaIfPresent(
   if (!m) return;
   const isImage = Boolean(m.imageMessage);
   const isDocument = Boolean(m.documentMessage);
+  const isVideo = Boolean(m.videoMessage);
   // Audio cuma ditangani di sini untuk channel SECONDARY (nomor kedua tidak punya alur
   // syarat/Request sama sekali). Untuk SERVICE, voice note sudah punya jalur khusus sendiri
   // (media/voiceNote.ts, tersimpan ke RequestMessage) - kalau ikut ditangani di sini juga,
   // hasilnya jadi dobel tampil di thread gabungan /admin-xpawto untuk warga yang sedang
   // punya pengajuan aktif.
   const isAudio = Boolean(m.audioMessage) && channel === "SECONDARY";
-  if (!isImage && !isDocument && !isAudio) return;
+  if (!isImage && !isDocument && !isAudio && !isVideo) return;
 
   try {
     const buffer = (await downloadMediaMessage(
@@ -63,6 +70,13 @@ export async function logInboxMediaIfPresent(
       realMimeType = "audio/ogg";
       ext = "ogg";
       label = "[Pesan suara]";
+    } else if (isVideo) {
+      // Sama seperti audio: video bukan tipe syarat yang divalidasi ketat (detectRealMimeType
+      // cuma kenal JPEG/PNG/PDF) - dipercaya dari mimetype yang diklaim WhatsApp saja, ini
+      // cuma untuk visibilitas percakapan di Pesan Masuk, bukan gerbang keamanan.
+      realMimeType = m.videoMessage?.mimetype ?? "video/mp4";
+      ext = EXT_BY_VIDEO_MIME[realMimeType] ?? "mp4";
+      label = "[Video]";
     } else {
       // Best-effort: kalau isi filenya bukan salah satu dari 3 tipe yang dikenali sistem
       // ini, lewati saja tanpa error - ini cuma catatan tambahan untuk visibilitas, bukan

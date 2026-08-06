@@ -16,6 +16,7 @@ interface Conversation {
   isGroup: boolean;
   groupName: string | null;
   lastSenderName: string | null;
+  contactName: string | null;
 }
 
 interface MessageItem {
@@ -470,16 +471,25 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center justify-between gap-2">
                         <span
-                          className={`truncate text-[13px] font-medium ${c.isGroup ? "" : "font-mono"} ${
-                            active ? "text-pastel-blue-ink" : "text-ink"
-                          }`}
+                          className={`truncate text-[13px] font-medium ${
+                            c.isGroup || c.contactName ? "" : "font-mono"
+                          } ${active ? "text-pastel-blue-ink" : "text-ink"}`}
                         >
-                          {c.isGroup ? (c.groupName ?? "Grup") : formatPhone(c.waNumber)}
+                          {c.isGroup ? (c.groupName ?? "Grup") : (c.contactName ?? formatPhone(c.waNumber))}
                         </span>
                         <span className={`shrink-0 text-[10.5px] ${active ? "text-pastel-blue-ink/70" : "text-ink-faint"}`}>
                           {relativeDuration(c.lastAt)}
                         </span>
                       </span>
+                      {!c.isGroup && c.contactName && (
+                        <span
+                          className={`block truncate font-mono text-[10.5px] ${
+                            active ? "text-pastel-blue-ink/70" : "text-ink-faint"
+                          }`}
+                        >
+                          {formatPhone(c.waNumber)}
+                        </span>
+                      )}
                       <span className="mt-0.5 flex items-center gap-1.5">
                         {needsReply && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-pastel-blue-ink" />}
                         <span
@@ -646,10 +656,17 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                   {selected.isGroup ? <IconUsers className="h-4 w-4" /> : initialsOf(selected.waNumber)}
                 </span>
                 <div className="min-w-0">
-                  <p className={`truncate text-sm font-medium text-ink ${selected.isGroup ? "" : "font-mono"}`}>
-                    {selected.isGroup ? (selected.groupName ?? "Grup") : formatPhone(selected.waNumber)}
+                  <p
+                    className={`truncate text-sm font-medium text-ink ${
+                      selected.isGroup || selected.contactName ? "" : "font-mono"
+                    }`}
+                  >
+                    {selected.isGroup ? (selected.groupName ?? "Grup") : (selected.contactName ?? formatPhone(selected.waNumber))}
                   </p>
                   <p className="text-[11px] text-ink-muted">
+                    {!selected.isGroup && selected.contactName && (
+                      <span className="font-mono">{formatPhone(selected.waNumber)} &middot; </span>
+                    )}
                     {selected.isGroup
                       ? "Grup WA - percakapan manual"
                       : channel === "SECONDARY"
@@ -683,11 +700,15 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
               )}
               {messages.map((m) => {
                 const isImage = Boolean(m.attachmentUrl && m.attachmentMimeType?.startsWith("image/"));
-                const isOtherFile = Boolean(m.attachmentUrl && !isImage);
-                // "[Foto]"/"[Dokumen]" cuma label generik yang dibuat otomatis saat menyimpan
-                // lampiran (lihat inboxMedia.ts) - tidak perlu ditampilkan lagi sebagai teks
-                // terpisah kalau lampirannya sudah dirender di atasnya.
-                const hideGenericLabel = (isImage && m.message === "[Foto]") || (isOtherFile && m.message === "[Dokumen]");
+                const isVideo = Boolean(m.attachmentUrl && m.attachmentMimeType?.startsWith("video/"));
+                const isOtherFile = Boolean(m.attachmentUrl && !isImage && !isVideo);
+                // "[Foto]"/"[Video]"/"[Dokumen]" cuma label generik yang dibuat otomatis saat
+                // menyimpan lampiran (lihat inboxMedia.ts) - tidak perlu ditampilkan lagi
+                // sebagai teks terpisah kalau lampirannya sudah dirender di atasnya.
+                const hideGenericLabel =
+                  (isImage && m.message === "[Foto]") ||
+                  (isVideo && m.message === "[Video]") ||
+                  (isOtherFile && m.message === "[Dokumen]");
                 return (
                   <div key={m.id} className={`flex flex-col ${m.direction === "OUTBOUND" ? "items-end" : "items-start"}`}>
                     <div
@@ -702,6 +723,10 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={m.attachmentUrl!} alt="Lampiran foto" className="block max-h-72 w-full object-cover" />
                         </a>
+                      )}
+                      {isVideo && (
+                        // eslint-disable-next-line jsx-a11y/media-has-caption
+                        <video src={m.attachmentUrl!} controls className="block max-h-72 w-full bg-canvas" />
                       )}
                       {isOtherFile && (
                         <a

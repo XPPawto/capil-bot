@@ -3,24 +3,13 @@ import { logger } from "../logger";
 import { checkRateLimit } from "./rateLimit";
 import { logInboxMessage, logOutboundFromDevice, type GroupMeta } from "./messageLog";
 import { logInboxMediaIfPresent } from "../media/inboxMedia";
-import { extractText, extractWaNumber } from "./messageHandler";
+import { extractParticipantNumber, extractText, extractWaNumber } from "./messageHandler";
 import { getGroupName } from "../wa/groupNameCache";
 import { wasSentByDashboard } from "../wa/sentMessageTracker";
 
 interface MessagesUpsertPayload {
   messages: WAMessage[];
   type: string;
-}
-
-/**
- * Sama seperti extractWaNumber tapi untuk PENGIRIM di dalam grup (msg.key.participant),
- * bukan lawan bicara di percakapan langsung (msg.key.remoteJid). WhatsApp bisa menyamarkan
- * ini juga lewat "LID" - kalau begitu, nomor asli ada di participantPn.
- */
-function extractParticipantNumber(msg: WAMessage): string | undefined {
-  const participantPn = msg.key.participantPn;
-  if (participantPn) return participantPn.split("@")[0];
-  return msg.key.participant?.split("@")[0];
 }
 
 /**
@@ -81,6 +70,12 @@ export async function handleSecondaryIncomingMessages(sock: WASocket, payload: M
       };
     } else {
       waNumber = isFromMe ? jid.split("@")[0] : extractWaNumber(msg, jid);
+      // Bukan grup - senderName di sini berarti nama profil WA lawan bicara itu sendiri
+      // (bukan grup), dipakai supaya daftar Pesan Masuk bisa tampilkan nama, bukan cuma
+      // nomor. Cuma diisi dari pesan MASUK (fromMe = kita, nama kita sendiri tidak relevan).
+      if (!isFromMe && msg.pushName) {
+        group = { isGroup: false, senderName: msg.pushName };
+      }
     }
 
     const direction: "INBOUND" | "OUTBOUND" = isFromMe ? "OUTBOUND" : "INBOUND";

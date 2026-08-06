@@ -3,7 +3,6 @@ import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
 import { getSecondarySocket } from "../wa/secondarySocket";
 import { humanSendMessage } from "../wa/humanSend";
-import { markAsSentByDashboard } from "../wa/sentMessageTracker";
 
 /**
  * Balasan bebas dari petugas lewat halaman "Pesan Masuk" - beda dari sendCustomMessage
@@ -16,9 +15,9 @@ export async function sendInboxReply(waJid: string, message: string, channel: In
   if (!sock) {
     throw new Error("Nomor WA belum terhubung, tidak bisa mengirim pesan.");
   }
-  const sent = await humanSendMessage(sock, waJid, { text: message });
-  // Supaya echo "fromMe" dari pesan ini sendiri tidak ikut dicatat dobel oleh
-  // secondaryMessageHandler.ts (yang sekarang juga menangkap balasan langsung dari HP).
-  markAsSentByDashboard(sent?.key?.id);
+  // ID pesan ini sudah otomatis ditandai di sentMessageTracker oleh humanSendMessage
+  // sendiri (sebelum dikirim) - lihat wa/humanSend.ts - supaya echo "fromMe"-nya tidak
+  // ikut dicatat dobel oleh messageHandler/secondaryMessageHandler.
+  await humanSendMessage(sock, waJid, { text: message });
   logger.info({ waJid, channel }, "Balasan kotak masuk terkirim ke warga");
 }

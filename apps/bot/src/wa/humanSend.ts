@@ -1,4 +1,5 @@
-import type { AnyMessageContent, WASocket } from "@whiskeysockets/baileys";
+import { generateMessageID, type AnyMessageContent, type WASocket } from "@whiskeysockets/baileys";
+import { markAsSentByDashboard } from "./sentMessageTracker";
 
 const MIN_DELAY_MS = 2000;
 const MAX_DELAY_MS = 5000;
@@ -29,12 +30,23 @@ function jitterDelayMs(): number {
  * instan/kaku ke sistem deteksi otomasi WhatsApp. Ini mitigasi risiko ban, bukan jaminan -
  * Baileys tetap unofficial client, tapi pola pengiriman yang lebih "manusiawi" mengurangi
  * salah satu sinyal paling gampang dipakai untuk mendeteksi bot.
+ *
+ * ID pesan dibuat SENDIRI di sini (bukan dibiarkan Baileys buat otomatis) dan langsung
+ * ditandai ke sentMessageTracker SEBELUM benar-benar dikirim - supaya messageHandler/
+ * secondaryMessageHandler bisa mengenali event "fromMe" dari echo pesan yang MEMANG kita
+ * kirim sendiri (lewat jalur mana pun: balasan bot otomatis, dashboard, dst) dan tidak
+ * mencatatnya dobel sebagai "dibalas langsung dari HP". Ditandai sebelum kirim (bukan
+ * sesudah) supaya tidak ada celah waktu balapan dengan event echo yang mungkin datang
+ * hampir bersamaan.
  */
 export async function humanSendMessage(
   sock: WASocket,
   jid: string,
   content: AnyMessageContent
 ): ReturnType<WASocket["sendMessage"]> {
+  const messageId = generateMessageID();
+  markAsSentByDashboard(messageId);
+
   try {
     await sock.sendPresenceUpdate("composing", jid);
   } catch {
@@ -49,5 +61,5 @@ export async function humanSendMessage(
     // ignore
   }
 
-  return sock.sendMessage(jid, content);
+  return sock.sendMessage(jid, content, { messageId });
 }

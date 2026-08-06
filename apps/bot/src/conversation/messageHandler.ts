@@ -5,9 +5,11 @@ import { runExclusive } from "./mutex";
 import { checkRateLimit } from "./rateLimit";
 import { humanSendMessage } from "../wa/humanSend";
 import { isHumanTakeoverActive } from "./humanTakeover";
-import { logInboundIfActiveRequest, logInboxMessage } from "./messageLog";
+import { logInboundIfActiveRequest, logInboxMessage, logOutboundFromDevice, type GroupMeta } from "./messageLog";
 import { handleVoiceNote } from "../media/voiceNote";
 import { logInboxMediaIfPresent } from "../media/inboxMedia";
+import { getGroupName } from "../wa/groupNameCache";
+import { wasSentByDashboard } from "../wa/sentMessageTracker";
 
 interface MessagesUpsertPayload {
   messages: WAMessage[];
@@ -31,6 +33,16 @@ export function extractWaNumber(msg: WAMessage, jid: string): string {
   return jid.split("@")[0];
 }
 
+/**
+ * Sama seperti extractWaNumber tapi untuk PENGIRIM di dalam grup (msg.key.participant),
+ * bukan lawan bicara di percakapan langsung (msg.key.remoteJid).
+ */
+export function extractParticipantNumber(msg: WAMessage): string | undefined {
+  const participantPn = msg.key.participantPn;
+  if (participantPn) return participantPn.split("@")[0];
+  return msg.key.participant?.split("@")[0];
+}
+
 export function extractText(msg: WAMessage): string | undefined {
   const raw = msg.message;
   if (!raw) return undefined;
@@ -44,11 +56,67 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
   if (payload.type !== "notify") return;
 
   for (const msg of payload.messages) {
-    if (msg.key.fromMe) continue;
     const jid = msg.key.remoteJid;
     if (!jid) continue;
-    if (jid.endsWith("@g.us") || jid === "status@broadcast" || jid.endsWith("@broadcast")) continue;
+    if (jid === "status@broadcast" || jid.endsWith("@broadcast")) continue;
     if (!msg.message) continue;
+
+    // ---- Pesan yang KITA kirim sendiri (fromMe) ----
+    // humanSendMessage (wa/humanSend.ts) menandai SETIAP pesan yang dikirim lewat kode
+    // kita sendiri - baik balasan otomatis bot, balasan admin dari dashboard, notifikasi
+    // status, dst - ke sentMessageTracker SEBELUM benar-benar dikirim. Kalau ID pesan ini
+    // ada di situ, ini cuma echo dari pesan yang memang sudah kita catat sendiri di jalur
+    // lain -> dilewati supaya tidak dobel. Kalau TIDAK ada, berarti ini diketik LANGSUNG
+    // dari HP nomor bot (bukan lewat kode kita sama sekali) -> direkam sebagai balasan baru
+    // supaya kelihatan juga di /admin-xpawto, lalu dihentikan (bukan input warga, tidak
+    // perlu diproses alur menu/formulir).
+    if (msg.key.fromMe) {
+      if (wasSentByDashboard(msg.key.id)) continue;
+
+      const isGroup = jid.endsWith("@g.us");
+      const waNumber = jid.split("@")[0];
+      const text = extractText(msg);
+      const group: GroupMeta | undefined = isGroup
+        ? { isGroup: true, groupName: await getGroupName(sock, jid) }
+        : undefined;
+
+      try {
+        if (text) await logOutboundFromDevice(jid, waNumber, text, "SERVICE", group);
+        await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group, "OUTBOUND");
+      } catch (err) {
+        logger.error({ err, jid }, "Gagal mencatat balasan dari HP nomor bot");
+      }
+      continue;
+    }
+
+    // ---- Grup WA ----
+    // HANYA dicatat pasif untuk visibilitas di /admin-xpawto - alur bot (menu, pengumpulan
+    // syarat, dst) SENGAJA TIDAK PERNAH dijalankan untuk pesan grup. Menjalankan alur
+    // pengajuan dokumen pribadi (KTP dkk) di dalam grup adalah risiko privasi nyata (data
+    // pribadi warga tercampur konteks publik/semi-publik grup) - beda dari sekadar mencatat
+    // pesan untuk dibaca petugas, yang tidak punya risiko itu.
+    if (jid.endsWith("@g.us")) {
+      const rateLimitResult = checkRateLimit(jid);
+      if (rateLimitResult === "blocked") continue;
+
+      const text = extractText(msg);
+      const senderNumber = extractParticipantNumber(msg);
+      const waNumber = senderNumber ?? jid.split("@")[0];
+      const group: GroupMeta = {
+        isGroup: true,
+        groupName: await getGroupName(sock, jid),
+        senderNumber,
+        senderName: msg.pushName ?? undefined,
+      };
+
+      try {
+        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group);
+        await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group);
+      } catch (err) {
+        logger.error({ err, jid }, "Gagal mencatat pesan grup ke kotak masuk");
+      }
+      continue;
+    }
 
     const rateLimitResult = checkRateLimit(jid);
     if (rateLimitResult === "blocked") continue; // sedang didiamkan, tidak diproses sama sekali
@@ -62,16 +130,20 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
     const waNumber = extractWaNumber(msg, jid);
     const text = extractText(msg);
 
+    // Nama profil WA pengirim (bukan grup) supaya daftar Pesan Masuk bisa menampilkan
+    // nama, bukan cuma nomor mentah.
+    const contact: GroupMeta = { isGroup: false, senderName: msg.pushName ?? undefined };
+
     // Dicatat lebih dulu, terlepas dari state/takeover - dasar halaman "Pesan Masuk" yang
     // menampilkan SEMUA nomor yang pernah chat bot, bukan cuma yang punya pengajuan aktif.
     if (text) {
-      logInboxMessage(jid, waNumber, text).catch((err) =>
+      logInboxMessage(jid, waNumber, text, "SERVICE", contact).catch((err) =>
         logger.error({ err, jid }, "Gagal mencatat pesan ke kotak masuk")
       );
     }
     // Foto/dokumen yang dikirim warga juga direkam ke kotak masuk (kalau ada) - lihat
     // komentar di media/inboxMedia.ts untuk alasan ini tidak mengganggu alur syarat resmi.
-    logInboxMediaIfPresent(sock, msg, jid, waNumber).catch((err) =>
+    logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", contact).catch((err) =>
       logger.error({ err, jid }, "Gagal mencatat media ke kotak masuk")
     );
 

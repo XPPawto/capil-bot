@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/apiGuard";
+import { requireVerifiedAdmin } from "@/lib/accessControl";
 import { connectExtraAccountQr } from "@/lib/botClient";
 
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
-  const guard = await requireAdmin();
+  const guard = await requireVerifiedAdmin();
   if ("error" in guard) return guard.error;
 
   const { id } = await params;

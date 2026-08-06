@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/apiGuard";
+import { requireVerifiedAdmin } from "@/lib/accessControl";
 import { sendInboxReply } from "@/lib/botClient";
 import { prisma } from "@/lib/prisma";
 import type { InboxChannel } from "@prisma/client";
@@ -15,6 +15,7 @@ interface ThreadMessage {
   senderName: string | null;
   senderNumber: string | null;
   editedAt: string | null;
+  status: string | null;
 }
 
 function channelFrom(value: string | null): InboxChannel {
@@ -34,7 +35,7 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ waJid: string }> }
 ): Promise<NextResponse> {
-  const guard = await requireAdmin();
+  const guard = await requireVerifiedAdmin();
   if ("error" in guard) return guard.error;
 
   const { waJid } = await params;
@@ -80,6 +81,7 @@ export async function GET(
       senderName: m.senderName ?? null,
       senderNumber: m.senderNumber ?? null,
       editedAt: m.editedAt ? m.editedAt.toISOString() : null,
+      status: m.status ?? null,
     })),
     ...requestRows.map((m) => ({
       id: `r${m.id}`,
@@ -92,6 +94,7 @@ export async function GET(
       senderName: null,
       senderNumber: null,
       editedAt: null,
+      status: null,
     })),
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
@@ -102,7 +105,7 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ waJid: string }> }
 ): Promise<NextResponse> {
-  const guard = await requireAdmin();
+  const guard = await requireVerifiedAdmin();
   if ("error" in guard) return guard.error;
 
   const { waJid } = await params;
@@ -146,14 +149,27 @@ export async function POST(
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  await prisma.inboxMessage.create({
-    data: { waJid: decodedWaJid, waNumber, channel, extraAccountId, direction: "OUTBOUND", message, adminId: guard.admin.id },
-  });
-
+  // Kirim dulu, baru catat - urutan ini juga dipakai ../send-file/route.ts. Selain lebih
+  // konsisten, ini butuh ID pesan WA hasil pengiriman (waMessageId) supaya messages.update
+  // (status centang) nanti bisa menemukan baris yang tepat untuk diperbarui.
   const sent = await sendInboxReply(decodedWaJid, message, channel, extraAccountId);
-  if (!sent) {
+  if (!sent.ok) {
     return NextResponse.json({ error: "send_failed" }, { status: 502 });
   }
+
+  await prisma.inboxMessage.create({
+    data: {
+      waJid: decodedWaJid,
+      waNumber,
+      channel,
+      extraAccountId,
+      direction: "OUTBOUND",
+      message,
+      adminId: guard.admin.id,
+      waMessageId: sent.waMessageId,
+      status: sent.waMessageId ? "SENT" : undefined,
+    },
+  });
 
   return NextResponse.json({ ok: true });
 }

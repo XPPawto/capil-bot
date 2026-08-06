@@ -182,3 +182,25 @@ export function IconArrowLeft({ className = base }: IconProps) {
     </svg>
   );
 }
+
+// Satu centang - status "terkirim" (sudah sampai server WA, belum tentu sampai HP lawan
+// bicara). Sengaja komponen terpisah dari IconCheckAll (bukan cuma dirender sekali/dobel
+// dari icon yang sama) supaya lebar/posisinya konsisten di kedua kondisi.
+export function IconCheck({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M3 8.5l3 3 7-7.5" />
+    </svg>
+  );
+}
+
+// Dua centang - dipakai untuk status "sampai di HP" (abu-abu) maupun "sudah dibaca" (biru,
+// lewat warna teks dari pemanggil, bukan dari icon ini sendiri).
+export function IconCheckAll({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M1 8.5l3 3 7-7.5" />
+      <path d="M8 8.5l3 3 7-7.5" />
+    </svg>
+  );
+}

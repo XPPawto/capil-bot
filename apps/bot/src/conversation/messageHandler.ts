@@ -12,6 +12,7 @@ import {
   logInboxMessage,
   logOutboundFromDevice,
   resolveKnownWaNumber,
+  updateMessageStatus,
   type GroupMeta,
 } from "./messageLog";
 import { handleVoiceNote } from "../media/voiceNote";
@@ -171,6 +172,45 @@ export async function handleMessageEditIfPresent(
     logger.error({ err, jid, originalId }, "Gagal menerapkan edit pesan");
   }
   return true;
+}
+
+/**
+ * Event centang WA (messages.update) - dikirim WhatsApp saat status pengiriman pesan KELUAR
+ * berubah (terkirim ke server -> sampai HP lawan bicara -> dibaca/diputar). Cuma relevan
+ * untuk pesan `fromMe` (yang KITA kirim) - status pesan MASUK tidak bermakna apa-apa di sini.
+ * Dipakai bareng oleh nomor layanan (SERVICE, socket.ts) dan tiap akun ekstra (EXTRA,
+ * extraAccountManager.ts) lewat parameter channel/extraAccountId, sama seperti
+ * handleMessageEditIfPresent.
+ */
+export async function handleMessageStatusUpdates(
+  updates: { key: proto.IMessageKey; update: Partial<proto.IWebMessageInfo> }[],
+  channel: InboxChannel,
+  extraAccountId?: number
+): Promise<void> {
+  for (const { key, update } of updates) {
+    if (!key.fromMe || !key.remoteJid || !key.id) continue;
+    const status = update.status;
+    if (status == null) continue;
+
+    let mapped: "SENT" | "DELIVERED" | "READ" | undefined;
+    if (status === proto.WebMessageInfo.Status.READ || status === proto.WebMessageInfo.Status.PLAYED) {
+      mapped = "READ";
+    } else if (status === proto.WebMessageInfo.Status.DELIVERY_ACK) {
+      mapped = "DELIVERED";
+    } else if (
+      status === proto.WebMessageInfo.Status.SERVER_ACK ||
+      status === proto.WebMessageInfo.Status.PENDING
+    ) {
+      mapped = "SENT";
+    }
+    if (!mapped) continue;
+
+    try {
+      await updateMessageStatus(key.remoteJid, key.id, mapped, channel, extraAccountId);
+    } catch (err) {
+      logger.warn({ err, jid: key.remoteJid, waMessageId: key.id }, "Gagal memperbarui status centang pesan");
+    }
+  }
 }
 
 export async function handleIncomingMessages(sock: WASocket, payload: MessagesUpsertPayload): Promise<void> {

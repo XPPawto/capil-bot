@@ -154,6 +154,39 @@ export async function applyMessageEdit(
 }
 
 /**
+ * Dipanggil saat WhatsApp mengabari perubahan status centang pesan KELUAR (messages.update,
+ * lihat messageHandler.ts) - "SENT" (satu centang, sudah sampai server WA), "DELIVERED" (dua
+ * centang abu-abu, sudah sampai HP lawan bicara), "READ" (dua centang biru, sudah dibaca/
+ * diputar). Sama seperti applyMessageEdit, dicari lewat waMessageId dan HANYA baris itu yang
+ * tersentuh. WhatsApp bisa mengirim status yang "mundur" secara urutan waktu (mis. DELIVERED
+ * datang belakangan setelah READ karena race di sisi WhatsApp sendiri) - status tidak pernah
+ * benar-benar mundur di UI WA asli, jadi di sini juga cuma ditulis kalau bukan kemunduran dari
+ * status yang sudah tercatat (rankStatus di bawah).
+ */
+const STATUS_RANK: Record<string, number> = { SENT: 1, DELIVERED: 2, READ: 3 };
+
+export async function updateMessageStatus(
+  waJid: string,
+  waMessageId: string,
+  status: "SENT" | "DELIVERED" | "READ",
+  channel: InboxChannel,
+  extraAccountId?: number
+): Promise<boolean> {
+  const existing = await prisma.inboxMessage.findFirst({
+    where:
+      channel === "EXTRA"
+        ? { waJid, waMessageId, channel, extraAccountId }
+        : { waJid, waMessageId, channel },
+    select: { id: true, status: true },
+  });
+  if (!existing) return false;
+  if (existing.status && STATUS_RANK[existing.status] >= STATUS_RANK[status]) return true;
+
+  await prisma.inboxMessage.update({ where: { id: existing.id }, data: { status } });
+  return true;
+}
+
+/**
  * Dicatat tiap ada panggilan suara/video masuk, supaya kelihatan di Pesan Masuk sebagai
  * bagian dari riwayat kontak orang itu, bukan cuma hilang begitu saja. Nomor layanan
  * (SERVICE) selalu menolak otomatis - lihat callHandler.ts, outcome-nya selalu "ditolak

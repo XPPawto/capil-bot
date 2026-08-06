@@ -3,6 +3,7 @@ import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
 import { getExtraAccountSocket } from "../wa/extraAccountManager";
 import { humanSendMessage } from "../wa/humanSend";
+import { notifyTelegramChatEvent } from "./telegramNotify";
 
 /**
  * Balasan bebas dari petugas lewat halaman "Pesan Masuk" - beda dari sendCustomMessage
@@ -16,7 +17,7 @@ export async function sendInboxReply(
   message: string,
   channel: InboxChannel = "SERVICE",
   extraAccountId?: number
-): Promise<void> {
+): Promise<string | undefined> {
   const sock = channel === "EXTRA" && extraAccountId ? getExtraAccountSocket(extraAccountId) : getSocket();
   if (!sock) {
     throw new Error("Nomor WA belum terhubung, tidak bisa mengirim pesan.");
@@ -24,6 +25,23 @@ export async function sendInboxReply(
   // ID pesan ini sudah otomatis ditandai di sentMessageTracker oleh humanSendMessage
   // sendiri (sebelum dikirim) - lihat wa/humanSend.ts - supaya echo "fromMe"-nya tidak
   // ikut dicatat dobel oleh messageHandler/extraAccountMessageHandler.
-  await humanSendMessage(sock, waJid, { text: message });
+  const sent = await humanSendMessage(sock, waJid, { text: message });
   logger.info({ waJid, channel, extraAccountId }, "Balasan kotak masuk terkirim ke warga");
+
+  // Notifikasi Telegram (permintaan pemilik) - balasan dashboard TIDAK PERNAH lewat alur
+  // messages.upsert biasa di extraAccountMessageHandler.ts (id-nya sudah ditandai
+  // sentMessageTracker di atas, jadi handler itu selalu "continue" lebih awal) - makanya
+  // dinotifikasi langsung di sini, satu-satunya tempat yang tahu ini balasan dashboard.
+  if (channel === "EXTRA" && extraAccountId) {
+    notifyTelegramChatEvent(extraAccountId, {
+      kind: "outbound_dashboard",
+      waNumber: waJid.split("@")[0],
+      text: message,
+    }).catch((err) => logger.warn({ err, waJid, extraAccountId }, "Gagal mengirim notifikasi Telegram"));
+  }
+
+  // Dikembalikan ke pemanggil (lewat control server -> web) supaya baris InboxMessage yang
+  // dibuat di sisi web bisa menyimpan ID pesan ini - dipakai messages.update nanti untuk
+  // memperbarui status centang (terkirim/sampai/dibaca) pesan yang SPESIFIK ini.
+  return sent?.key?.id ?? undefined;
 }

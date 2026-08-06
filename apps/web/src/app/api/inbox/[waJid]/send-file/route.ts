@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/apiGuard";
+import { requireVerifiedAdmin } from "@/lib/accessControl";
 import { sendInboxFile } from "@/lib/botClient";
 import { prisma } from "@/lib/prisma";
 import type { InboxChannel } from "@prisma/client";
@@ -17,7 +17,7 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ waJid: string }> }
 ): Promise<NextResponse> {
-  const guard = await requireAdmin();
+  const guard = await requireVerifiedAdmin();
   if ("error" in guard) return guard.error;
 
   const { waJid } = await params;
@@ -83,6 +83,8 @@ export async function POST(
       direction: "OUTBOUND",
       message: `[File dikirim: ${file.name}]`,
       adminId: guard.admin.id,
+      waMessageId: result.waMessageId,
+      status: result.waMessageId ? "SENT" : undefined,
     },
   });
 

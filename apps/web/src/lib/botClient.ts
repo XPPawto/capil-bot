@@ -114,15 +114,17 @@ export async function sendInboxReply(
   message: string,
   channel: "SERVICE" | "EXTRA" = "SERVICE",
   extraAccountId?: number
-): Promise<boolean> {
+): Promise<{ ok: boolean; waMessageId?: string }> {
   try {
     const res = await callControlServer("/notify/inbox-reply", {
       method: "POST",
       body: JSON.stringify({ waJid, message, channel, extraAccountId }),
     });
-    return res.ok;
+    if (!res.ok) return { ok: false };
+    const data = await res.json().catch(() => ({}));
+    return { ok: true, waMessageId: data.waMessageId ?? undefined };
   } catch {
-    return false;
+    return { ok: false };
   }
 }
 
@@ -163,17 +165,17 @@ export async function sendInboxFile(
   fileBase64: string,
   channel: "SERVICE" | "EXTRA" = "SERVICE",
   extraAccountId?: number
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; waMessageId?: string }> {
   try {
     const res = await callControlServer("/notify/inbox-file", {
       method: "POST",
       body: JSON.stringify({ waJid, fileName, mimeType, fileBase64, channel, extraAccountId }),
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
       return { ok: false, error: data.error ?? "failed" };
     }
-    return { ok: true };
+    return { ok: true, waMessageId: data.waMessageId ?? undefined };
   } catch {
     return { ok: false, error: "bot_unreachable" };
   }

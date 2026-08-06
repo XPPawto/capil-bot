@@ -271,8 +271,8 @@ export function startControlServer(): void {
       return;
     }
     try {
-      await sendInboxReply(waJid, message, channel, extraAccountId);
-      res.json({ ok: true });
+      const waMessageId = await sendInboxReply(waJid, message, channel, extraAccountId);
+      res.json({ ok: true, waMessageId: waMessageId ?? null });
     } catch (err) {
       logger.error({ err, waJid }, "Gagal mengirim balasan kotak masuk ke warga");
       res.status(502).json({ error: "send_failed" });
@@ -291,8 +291,8 @@ export function startControlServer(): void {
       return;
     }
     try {
-      await sendInboxFile(waJid, fileName, mimeType, fileBase64, channel, extraAccountId);
-      res.json({ ok: true });
+      const waMessageId = await sendInboxFile(waJid, fileName, mimeType, fileBase64, channel, extraAccountId);
+      res.json({ ok: true, waMessageId: waMessageId ?? null });
     } catch (err) {
       logger.error({ err, waJid, fileName }, "Gagal mengirim file lewat Pesan Masuk");
       res.status(502).json({ error: "send_failed" });

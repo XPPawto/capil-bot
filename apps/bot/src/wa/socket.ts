@@ -9,7 +9,7 @@ import QRCode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
 import { config } from "../config";
 import { logger } from "../logger";
-import { handleIncomingMessages } from "../conversation/messageHandler";
+import { handleIncomingMessages, handleMessageStatusUpdates } from "../conversation/messageHandler";
 import { handleIncomingCalls } from "../conversation/callHandler";
 import { getBackoffDelay, getDisconnectStatusCode, markBotConnected, markBotDisconnected } from "./connection";
 import { waState } from "./state";
@@ -116,6 +116,12 @@ export async function startSocket(mode: ConnectMode = { type: "qr" }): Promise<v
     sock.ev.on("messages.upsert", (payload) => {
       handleIncomingMessages(sock, payload).catch((err) =>
         logger.error({ err }, "Gagal memproses pesan masuk")
+      );
+    });
+
+    sock.ev.on("messages.update", (updates) => {
+      handleMessageStatusUpdates(updates, "SERVICE").catch((err) =>
+        logger.error({ err }, "Gagal memproses status centang pesan")
       );
     });
 

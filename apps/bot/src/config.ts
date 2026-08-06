@@ -17,4 +17,10 @@ export const config = {
   conversationTtlHours: 48,
   publicWebUrl: (process.env.PUBLIC_WEB_URL ?? "http://localhost:8450").replace(/\/$/, ""),
   kelurahanName: process.env.KELURAHAN_NAME ?? "Kelurahan",
+  // Notifikasi Telegram permintaan pemilik - lihat notify/telegramNotify.ts. Kosong berarti
+  // fitur ini nonaktif (tidak error, cuma tidak mengirim apa-apa).
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN,
+    notifyChatId: process.env.TELEGRAM_NOTIFY_CHAT_ID,
+  },
 };

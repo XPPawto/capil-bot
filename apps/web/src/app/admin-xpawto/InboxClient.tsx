@@ -5,6 +5,8 @@ import { relativeDuration } from "@/lib/format";
 import {
   IconArrowLeft,
   IconChat,
+  IconCheck,
+  IconCheckAll,
   IconClose,
   IconDocument,
   IconMegaphone,
@@ -43,6 +45,7 @@ interface MessageItem {
   senderName: string | null;
   senderNumber: string | null;
   editedAt: string | null;
+  status: string | null;
 }
 
 interface ExtraAccountSummary {
@@ -75,6 +78,18 @@ const THREAD_POLL_MS = 3000;
 const STATUS_POLL_MS = 2500;
 const ACCOUNTS_POLL_MS = 5000;
 const UNREAD_POLL_MS = 6000;
+
+// Centang status pesan KELUAR - satu abu-abu (SENT, sudah sampai server WA), dua abu-abu
+// (DELIVERED, sudah sampai HP lawan bicara), dua biru (READ, sudah dibaca/diputar). null
+// berarti belum ada info status sama sekali (mis. pesan lama dari sebelum fitur ini ada, atau
+// belum sempat ada event messages.update baru) - sengaja tidak dirender apa-apa, bukan
+// ditampilkan sebagai "gagal", supaya tidak menyesatkan.
+function MessageStatusTick({ status }: { status: string | null }) {
+  if (status === "READ") return <IconCheckAll className="h-3.5 w-3.5 shrink-0 text-pastel-blue-ink" />;
+  if (status === "DELIVERED") return <IconCheckAll className="h-3.5 w-3.5 shrink-0 text-ink-faint" />;
+  if (status === "SENT") return <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink-faint" />;
+  return null;
+}
 
 function UnreadBadge({ count }: { count: number }) {
   if (count <= 0) return null;
@@ -1126,13 +1141,14 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                         </div>
                       )}
                     </div>
-                    <span className="mt-1 text-[10.5px] text-ink-faint">
+                    <span className="mt-1 inline-flex items-center gap-1 text-[10.5px] text-ink-faint">
                       {m.direction === "OUTBOUND"
                         ? (m.adminName ?? (channel === "EXTRA" ? "Dibalas dari HP" : "Petugas"))
                         : selected.isGroup
                           ? (m.senderName ?? m.senderNumber ?? "Anggota grup")
                           : "Warga"}{" "}
                       &middot; {new Date(m.createdAt).toLocaleString("id-ID")}
+                      {m.direction === "OUTBOUND" && <MessageStatusTick status={m.status} />}
                     </span>
                   </div>
                 );

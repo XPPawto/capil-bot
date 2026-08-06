@@ -4,6 +4,7 @@ import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
 import { getExtraAccountSocket } from "../wa/extraAccountManager";
 import { humanSendMessage } from "../wa/humanSend";
+import { sendTelegramMediaBuffer } from "./telegramNotify";
 
 /**
  * Petugas kirim file (foto/dokumen) ke warga langsung dari halaman Pesan Masuk, tidak
@@ -20,7 +21,7 @@ export async function sendInboxFile(
   fileBase64: string,
   channel: InboxChannel = "SERVICE",
   extraAccountId?: number
-): Promise<void> {
+): Promise<string | undefined> {
   const sock = channel === "EXTRA" && extraAccountId ? getExtraAccountSocket(extraAccountId) : getSocket();
   if (!sock) {
     throw new Error("Nomor WA belum terhubung, tidak bisa mengirim file.");
@@ -31,11 +32,23 @@ export async function sendInboxFile(
 
   // ID pesan ini sudah otomatis ditandai di sentMessageTracker oleh humanSendMessage
   // sendiri sebelum dikirim - lihat wa/humanSend.ts.
-  if (realMimeType.startsWith("image/")) {
-    await humanSendMessage(sock, waJid, { image: buffer });
-  } else {
-    await humanSendMessage(sock, waJid, { document: buffer, fileName, mimetype: realMimeType });
-  }
+  const sent = realMimeType.startsWith("image/")
+    ? await humanSendMessage(sock, waJid, { image: buffer })
+    : await humanSendMessage(sock, waJid, { document: buffer, fileName, mimetype: realMimeType });
 
   logger.info({ waJid, fileName, realMimeType }, "File terkirim ke warga lewat Pesan Masuk");
+
+  // Notifikasi Telegram (permintaan pemilik) - file-nya sendiri diteruskan (bukan cuma
+  // label teks), sama seperti media dari pesan WA asli di forwardTelegramChatActivity.
+  if (channel === "EXTRA" && extraAccountId) {
+    sendTelegramMediaBuffer(
+      extraAccountId,
+      buffer,
+      realMimeType,
+      `✅ Balasan terkirim lewat dashboard (Akun Kedua)\nKe: ${waJid.split("@")[0]}\n\n[File: ${fileName}]`,
+      { fileName }
+    ).catch((err) => logger.warn({ err, waJid, extraAccountId }, "Gagal meneruskan file ke Telegram"));
+  }
+
+  return sent?.key?.id ?? undefined;
 }

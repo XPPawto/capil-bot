@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/apiGuard";
+import { requireVerifiedAdmin } from "@/lib/accessControl";
 import { decryptBuffer } from "@/lib/fileEncryption";
 import { prisma } from "@/lib/prisma";
 
@@ -17,7 +17,7 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
-  const guard = await requireAdmin();
+  const guard = await requireVerifiedAdmin();
   if ("error" in guard) return guard.error;
 
   const { id } = await params;

@@ -49,6 +49,12 @@ model Admin {
   name             String
   failedLoginCount Int             @default(0)
   lockedUntil      DateTime?
+  // Lockout TERPISAH dari failedLoginCount/lockedUntil di atas (yang khusus login
+  // username+password) - ini untuk percobaan PIN /admin-xpawto yang gagal (lihat
+  // lib/accessControl.ts), supaya sesi admin yang sudah valid tidak bisa dipakai untuk
+  // brute-force PIN 6 digit tanpa batas.
+  pinFailedCount   Int             @default(0)
+  pinLockedUntil   DateTime?
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   sessions         Session[]
@@ -90,6 +96,21 @@ model BotSession {
   connected       Boolean   @default(false)
   lastConnectedAt DateTime?
   updatedAt       DateTime  @updatedAt
+}
+
+/// Singleton (id selalu 1) - kredensial gerbang tambahan untuk satu halaman tertentu, tidak
+/// pernah diedit lewat UI/API mana pun di aplikasi ini (satu-satunya jalur tulis adalah
+/// script CLI terpisah yang dijalankan manual di server, lihat packages/db/scripts). pinHash
+/// adalah hash satu arah (bcrypt) - tidak bisa dibalik untuk mendapat nilai aslinya lagi.
+/// totpSecret (kalau diisi) adalah kunci bersama TOTP (RFC 6238, sama seperti Google
+/// Authenticator/app Kata Sandi iPhone) yang dienkripsi AES-256-GCM - authentication tag GCM
+/// membuat isinya tidak bisa diubah/ditambah sama sekali tanpa kunci yang dipegang server
+/// (proses tulis ulang manual di luar aplikasi, bukan lewat baris kode mana pun di sini).
+model AccessControl {
+  id         Int      @id @default(1)
+  pinHash    String
+  totpSecret Bytes?
+  updatedAt  DateTime @updatedAt
 }
 
 /// Nomor WA kedua yang ditautkan terpisah dari nomor layanan (BotSession) - dipakai murni
@@ -313,6 +334,11 @@ model InboxMessage {
   // belum pernah) - dipakai UI untuk kasih tanda "diedit" di pesan itu.
   waMessageId        String?
   editedAt           DateTime?
+  // Status centang WA untuk pesan KELUAR yang dikirim SETELAH fitur ini ada (SENT/
+  // DELIVERED/READ) - diperbarui lewat event messages.update (lihat messageStatusHandler
+  // di messageHandler.ts). Tetap null untuk pesan MASUK (tidak relevan) dan pesan lama dari
+  // sebelum fitur ini dibangun (tidak retroaktif, tidak ada datanya).
+  status             String?
 
   @@index([waJid])
   @@index([channel])

@@ -13,6 +13,7 @@ import { config } from "../config";
 import { logger } from "../logger";
 import type { ConnectMode } from "./socket";
 import { handleExtraAccountIncomingMessages } from "../conversation/extraAccountMessageHandler";
+import { handleMessageStatusUpdates } from "../conversation/messageHandler";
 import { handleExtraAccountCalls } from "../conversation/extraAccountCallHandler";
 
 interface ExtraAccountRuntime {
@@ -174,6 +175,12 @@ export async function startExtraAccountSocket(accountId: number, mode: ConnectMo
     sock.ev.on("messages.upsert", (payload) => {
       handleExtraAccountIncomingMessages(sock, payload, accountId).catch((err) =>
         logger.error({ err, accountId }, "Gagal memproses pesan masuk akun ekstra")
+      );
+    });
+
+    sock.ev.on("messages.update", (updates) => {
+      handleMessageStatusUpdates(updates, "EXTRA", accountId).catch((err) =>
+        logger.error({ err, accountId }, "Gagal memproses status centang pesan akun ekstra")
       );
     });
     // Panggilan TIDAK ditolak otomatis (beda dari nomor layanan) - dibiarkan berdering

@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/apiGuard";
+import { requireVerifiedAdmin } from "@/lib/accessControl";
 import { createExtraAccount, listExtraAccounts } from "@/lib/botClient";
 
 export async function GET(): Promise<NextResponse> {
-  const guard = await requireAdmin();
+  const guard = await requireVerifiedAdmin();
   if ("error" in guard) return guard.error;
 
   try {
@@ -15,7 +15,7 @@ export async function GET(): Promise<NextResponse> {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  const guard = await requireAdmin();
+  const guard = await requireVerifiedAdmin();
   if ("error" in guard) return guard.error;
 
   const body = await req.json().catch(() => ({}));

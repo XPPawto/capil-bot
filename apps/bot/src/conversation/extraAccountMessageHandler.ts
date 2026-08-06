@@ -13,6 +13,7 @@ import {
 import { getGroupName } from "../wa/groupNameCache";
 import { getChannelName } from "../wa/channelNameCache";
 import { wasSentByDashboard } from "../wa/sentMessageTracker";
+import { forwardTelegramChatActivity } from "../notify/telegramNotify";
 
 interface MessagesUpsertPayload {
   messages: WAMessage[];
@@ -127,5 +128,23 @@ export async function handleExtraAccountIncomingMessages(
     } catch (err) {
       logger.error({ err, jid, accountId }, "Gagal mencatat pesan akun ekstra ke kotak masuk");
     }
+
+    // Notifikasi Telegram (permintaan pemilik) - HANYA untuk akun ekstra tertentu (lihat
+    // notify/telegramNotify.ts, isinya sendiri sudah menyaring accountId). Titik ini HANYA
+    // pernah dicapai oleh pesan MASUK (inbound) atau balasan yang diketik LANGSUNG dari HP
+    // (isFromMe tapi bukan lewat dashboard - balasan lewat dashboard sudah "continue" lebih
+    // awal di atas dan dinotifikasi tersendiri dari notify/sendInboxReply.ts &
+    // sendInboxFile.ts). Foto/video/voice note DITERUSKAN sungguhan (bukan cuma label),
+    // ditangani di dalam forwardTelegramChatActivity itu sendiri. Best-effort, dijalankan di
+    // luar try/catch pencatatan di atas supaya kegagalan kirim Telegram tidak pernah membuat
+    // pencatatan ke /admin-xpawto ikut ditandai gagal di log.
+    forwardTelegramChatActivity(sock, msg, accountId, isFromMe ? "outbound_device" : "inbound", text, {
+      isGroup,
+      isChannel,
+      groupName: group?.groupName,
+      senderName: group?.senderName,
+      senderNumber: group?.senderNumber,
+      waNumber,
+    }).catch((err) => logger.warn({ err, jid, accountId }, "Gagal mengirim notifikasi Telegram"));
   }
 }

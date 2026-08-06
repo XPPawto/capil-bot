@@ -112,12 +112,13 @@ export async function notifyTakeover(waJid: string, active: boolean): Promise<bo
 export async function sendInboxReply(
   waJid: string,
   message: string,
-  channel: "SERVICE" | "SECONDARY" = "SERVICE"
+  channel: "SERVICE" | "EXTRA" = "SERVICE",
+  extraAccountId?: number
 ): Promise<boolean> {
   try {
     const res = await callControlServer("/notify/inbox-reply", {
       method: "POST",
-      body: JSON.stringify({ waJid, message, channel }),
+      body: JSON.stringify({ waJid, message, channel, extraAccountId }),
     });
     return res.ok;
   } catch {
@@ -160,12 +161,13 @@ export async function sendInboxFile(
   fileName: string,
   mimeType: string,
   fileBase64: string,
-  channel: "SERVICE" | "SECONDARY" = "SERVICE"
+  channel: "SERVICE" | "EXTRA" = "SERVICE",
+  extraAccountId?: number
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await callControlServer("/notify/inbox-file", {
       method: "POST",
-      body: JSON.stringify({ waJid, fileName, mimeType, fileBase64, channel }),
+      body: JSON.stringify({ waJid, fileName, mimeType, fileBase64, channel, extraAccountId }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -177,27 +179,61 @@ export async function sendInboxFile(
   }
 }
 
+export interface ExtraAccountSummary {
+  id: number;
+  label: string;
+  phoneNumber: string | null;
+  lastConnectedAt: string | null;
+  connected: boolean;
+  isConnecting: boolean;
+}
+
+export interface ExtraAccountStatus extends BotStatus {
+  id: number;
+}
+
 /**
- * Status/koneksi nomor KEDUA (perangkat tertaut manual, bukan bot layanan) - dipakai tab
- * "Akun Kedua" di /admin-xpawto. Struktur identik dengan getBotStatus/connectBotQr/dst,
- * cuma menembak endpoint /secondary/* di control server.
+ * Akun-akun ekstra (perangkat tertaut manual, bukan bot layanan) - bisa lebih dari satu
+ * (Akun Kedua, Akun Ketiga, dst), dipakai halaman /admin-xpawto. Struktur mirip
+ * getBotStatus/connectBotQr/dst, cuma dibedakan per id lewat endpoint /extra-accounts/*.
  */
-export async function getSecondaryAccountStatus(): Promise<BotStatus> {
-  const res = await callControlServer("/secondary/status");
-  if (!res.ok) throw new Error("Gagal mengambil status akun kedua");
+export async function listExtraAccounts(): Promise<ExtraAccountSummary[]> {
+  const res = await callControlServer("/extra-accounts");
+  if (!res.ok) throw new Error("Gagal mengambil daftar akun ekstra");
+  const data = await res.json();
+  return data.accounts;
+}
+
+export async function createExtraAccount(label: string): Promise<{ id: number; label: string } | null> {
+  const res = await callControlServer("/extra-accounts", { method: "POST", body: JSON.stringify({ label }) });
+  if (!res.ok) return null;
   return res.json();
 }
 
-export async function connectSecondaryQr(): Promise<Response> {
-  return callControlServer("/secondary/connect-qr", { method: "POST" });
+export async function getExtraAccountStatus(id: number): Promise<ExtraAccountStatus> {
+  const res = await callControlServer(`/extra-accounts/${id}/status`);
+  if (!res.ok) throw new Error("Gagal mengambil status akun ekstra");
+  const data = await res.json();
+  return { ...data, id };
 }
 
-export async function connectSecondaryPairing(phoneNumber: string): Promise<Response> {
-  return callControlServer("/secondary/connect-pairing", { method: "POST", body: JSON.stringify({ phoneNumber }) });
+export async function connectExtraAccountQr(id: number): Promise<Response> {
+  return callControlServer(`/extra-accounts/${id}/connect-qr`, { method: "POST" });
 }
 
-export async function logoutSecondaryAccount(): Promise<Response> {
-  return callControlServer("/secondary/logout", { method: "POST" });
+export async function connectExtraAccountPairing(id: number, phoneNumber: string): Promise<Response> {
+  return callControlServer(`/extra-accounts/${id}/connect-pairing`, {
+    method: "POST",
+    body: JSON.stringify({ phoneNumber }),
+  });
+}
+
+export async function logoutExtraAccount(id: number): Promise<Response> {
+  return callControlServer(`/extra-accounts/${id}/logout`, { method: "POST" });
+}
+
+export async function deleteExtraAccount(id: number): Promise<Response> {
+  return callControlServer(`/extra-accounts/${id}`, { method: "DELETE" });
 }
 
 /** Mengembalikan alasan gagal (kalau ada) supaya bisa ditampilkan ke admin. */

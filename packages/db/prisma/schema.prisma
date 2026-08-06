@@ -36,7 +36,9 @@ enum MessageDirection {
 /// dengan warga yang sama tapi lewat nomor kami yang berbeda.
 enum InboxChannel {
   SERVICE
-  SECONDARY
+  /// Salah satu akun ekstra (lihat ExtraAccount.id lewat InboxMessage.extraAccountId) -
+  /// dulu namanya SECONDARY waktu cuma bisa satu akun tambahan, sekarang bisa banyak.
+  EXTRA
 }
 
 /// Akun petugas/admin dashboard.
@@ -94,6 +96,25 @@ model BotSession {
 /// sebagai perangkat tertaut manual (bukan bot, tidak menjalankan alur menu/otomatis apa
 /// pun), supaya petugas bisa chat langsung dari /admin-xpawto tapi tetap tercatat terpusat.
 /// Singleton sama seperti BotSession.
+/// Nomor WA "ekstra" - perangkat tertaut manual (bukan bot layanan), bisa lebih dari satu
+/// (Akun Kedua, Akun Ketiga, dst). Menggantikan SecondaryAccountSession yang dulu singleton
+/// (cuma bisa satu akun tambahan) - sekarang tiap baris di sini adalah satu akun terpisah,
+/// masing-masing dengan folder auth Baileys sendiri (lihat wa/extraAccountManager.ts).
+model ExtraAccount {
+  id              Int       @id @default(autoincrement())
+  label           String
+  waJid           String?
+  phoneNumber     String?
+  connected       Boolean   @default(false)
+  lastConnectedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  inboxMessages InboxMessage[]
+}
+
+/// @deprecated Digantikan oleh ExtraAccount (mendukung lebih dari satu akun tambahan).
+/// Tabel ini dibiarkan ada (data lama tidak dihapus) tapi tidak lagi ditulis/dibaca kode.
 model SecondaryAccountSession {
   id              Int       @id @default(1)
   waJid           String?
@@ -264,11 +285,14 @@ model InboxMessage {
   waJid              String
   waNumber           String
   channel            InboxChannel     @default(SERVICE)
+  // Diisi cuma kalau channel = EXTRA - akun ekstra mana yang menerima/mengirim pesan ini.
+  extraAccountId     Int?
+  extraAccount       ExtraAccount?    @relation(fields: [extraAccountId], references: [id])
   direction          MessageDirection
   message            String           @db.Text
   attachmentPath     String?
   attachmentMimeType String?
-  // Grup WA (cuma berlaku untuk channel SECONDARY - lihat secondaryMessageHandler.ts).
+  // Grup WA (cuma berlaku untuk channel EXTRA - lihat extraAccountMessageHandler.ts).
   // waJid untuk pesan grup adalah JID grupnya sendiri (...@g.us), bukan JID satu orang -
   // senderNumber/senderName menyimpan siapa yang benar-benar mengirim pesan itu di dalam
   // grup, karena satu "percakapan" grup berisi banyak pengirim berbeda.
@@ -282,6 +306,7 @@ model InboxMessage {
 
   @@index([waJid])
   @@index([channel])
+  @@index([extraAccountId])
   @@index([createdAt])
 }
 

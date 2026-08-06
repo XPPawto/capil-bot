@@ -1,13 +1,17 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/apiGuard";
-import { logoutSecondaryAccount } from "@/lib/botClient";
+import { logoutExtraAccount } from "@/lib/botClient";
 
-export async function POST(): Promise<NextResponse> {
+export async function POST(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
 
+  const { id } = await params;
   try {
-    const res = await logoutSecondaryAccount();
+    const res = await logoutExtraAccount(Number(id));
     if (!res.ok) {
       return NextResponse.json({ error: "failed" }, { status: res.status });
     }

@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relativeDuration } from "@/lib/format";
 import { IconChat, IconDocument, IconPaperclip, IconSearch, IconUsers } from "@/components/icons";
 
-type Channel = "SERVICE" | "SECONDARY";
+type Channel = "SERVICE" | "EXTRA";
+/** "SERVICE" = nomor bot layanan; angka = id salah satu akun ekstra (Akun Kedua, Ketiga, dst). */
+type AccountKey = "SERVICE" | number;
 
 interface Conversation {
   waJid: string;
@@ -31,6 +33,15 @@ interface MessageItem {
   senderNumber: string | null;
 }
 
+interface ExtraAccountSummary {
+  id: number;
+  label: string;
+  phoneNumber: string | null;
+  lastConnectedAt: string | null;
+  connected: boolean;
+  isConnecting: boolean;
+}
+
 interface AccountStatus {
   connected: boolean;
   isConnecting: boolean;
@@ -42,9 +53,25 @@ interface AccountStatus {
   offline?: boolean;
 }
 
+interface UnreadCounts {
+  service: number;
+  extra: Record<number, number>;
+}
+
 const LIST_POLL_MS = 6000;
 const THREAD_POLL_MS = 3000;
 const STATUS_POLL_MS = 2500;
+const ACCOUNTS_POLL_MS = 5000;
+const UNREAD_POLL_MS = 6000;
+
+function UnreadBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-pastel-red px-1 text-[9.5px] font-semibold leading-none text-pastel-red-ink">
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
 
 function initialsOf(waNumber: string): string {
   return waNumber.slice(-2);
@@ -62,7 +89,8 @@ function formatPhone(waNumber: string): string {
 }
 
 export function InboxClient({ initialConversations }: { initialConversations: Conversation[] }) {
-  const [channel, setChannel] = useState<Channel>("SERVICE");
+  const [accountKey, setAccountKey] = useState<AccountKey>("SERVICE");
+  const [extraAccounts, setExtraAccounts] = useState<ExtraAccountSummary[]>([]);
   const [conversations, setConversations] = useState(initialConversations);
   const [query, setQuery] = useState("");
   const [selectedWaJid, setSelectedWaJid] = useState<string | null>(initialConversations[0]?.waJid ?? null);
@@ -76,17 +104,34 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
   const [error, setError] = useState<string | null>(null);
   const [togglingTakeover, setTogglingTakeover] = useState(false);
 
-  // ---- akun kedua: status koneksi + form sambungkan ----
-  const [secondaryStatus, setSecondaryStatus] = useState<AccountStatus | null>(null);
+  // ---- akun ekstra yang sedang dipilih tapi belum tersambung: status koneksi + form sambungkan ----
+  const [extraStatus, setExtraStatus] = useState<AccountStatus | null>(null);
   const [connectTab, setConnectTab] = useState<"qr" | "pairing">("qr");
   const [phoneNumberInput, setPhoneNumberInput] = useState("");
   const [connectError, setConnectError] = useState<string | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [addingAccount, setAddingAccount] = useState(false);
+  const [newAccountLabel, setNewAccountLabel] = useState("");
+  const [forceReconnectScreen, setForceReconnectScreen] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const latestCreatedAtRef = useRef<string | undefined>(undefined);
+
+  const channel: Channel = accountKey === "SERVICE" ? "SERVICE" : "EXTRA";
+  const extraAccountId = accountKey === "SERVICE" ? undefined : accountKey;
+  const selectedAccountSummary = accountKey === "SERVICE" ? null : extraAccounts.find((a) => a.id === accountKey) ?? null;
+  // "Belum pernah tersambung sama sekali" (belum pernah scan QR/pairing) - satu-satunya
+  // kondisi yang benar-benar butuh layar sambungkan. Kalau akun PERNAH tersambung tapi
+  // SEDANG terputus (mis. logout dari HP, atau nomornya kena batasan WhatsApp), riwayat
+  // chat-nya tetap ada di database dan tetap harus bisa dibuka - cuma tidak bisa membalas
+  // sampai disambungkan ulang. Jangan pernah menyembunyikan riwayat gara-gara status
+  // koneksi saat ini.
+  const neverConnected = accountKey !== "SERVICE" && !selectedAccountSummary?.phoneNumber;
+  const showConnectScreen = accountKey !== "SERVICE" && (neverConnected || forceReconnectScreen);
+  const ready = accountKey === "SERVICE" || !showConnectScreen;
+  const isDisconnected = channel === "EXTRA" && selectedAccountSummary != null && !selectedAccountSummary.connected;
 
   const selected = useMemo(
     () => conversations.find((c) => c.waJid === selectedWaJid) ?? null,
@@ -101,12 +146,52 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
     );
   }, [conversations, query]);
 
-  const secondaryReady = channel === "SERVICE" || Boolean(secondaryStatus?.connected);
-
-  // ---- poll daftar percakapan (channel-aware) ----
-  const pollList = useCallback(async (ch: Channel) => {
+  // ---- daftar akun ekstra (tab-tab tambahan) - dipoll terus supaya status sambung/putus
+  // dan akun baru yang dibuat langsung kelihatan tanpa reload ----
+  const pollAccounts = useCallback(async () => {
     try {
-      const res = await fetch(`/api/inbox?channel=${ch}`, { cache: "no-store" });
+      const res = await fetch("/api/inbox/extra-accounts", { cache: "no-store" });
+      if (!res.ok) return;
+      const data: { accounts: ExtraAccountSummary[] } = await res.json();
+      setExtraAccounts(data.accounts);
+    } catch {
+      // koneksi gagal sesaat, dicoba lagi di siklus berikutnya
+    }
+  }, []);
+
+  useEffect(() => {
+    pollAccounts();
+    const interval = setInterval(pollAccounts, ACCOUNTS_POLL_MS);
+    return () => clearInterval(interval);
+  }, [pollAccounts]);
+
+  // ---- badge "belum dibalas" per tab akun - dihitung untuk SEMUA akun sekaligus, bukan
+  // cuma yang sedang dibuka, supaya tab yang lagi tidak aktif tetap kelihatan butuh dibalas ----
+  const [unreadCounts, setUnreadCounts] = useState<UnreadCounts>({ service: 0, extra: {} });
+  const pollUnreadCounts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/inbox/unread-counts", { cache: "no-store" });
+      if (!res.ok) return;
+      const data: UnreadCounts = await res.json();
+      setUnreadCounts(data);
+    } catch {
+      // koneksi gagal sesaat, dicoba lagi di siklus berikutnya
+    }
+  }, []);
+
+  useEffect(() => {
+    pollUnreadCounts();
+    const interval = setInterval(pollUnreadCounts, UNREAD_POLL_MS);
+    return () => clearInterval(interval);
+  }, [pollUnreadCounts]);
+
+  // ---- poll daftar percakapan (akun-aware) ----
+  const pollList = useCallback(async (ch: Channel, id: number | undefined) => {
+    try {
+      const url = new URL("/api/inbox", window.location.origin);
+      url.searchParams.set("channel", ch);
+      if (id) url.searchParams.set("extraAccountId", String(id));
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) return;
       const data: { conversations: Conversation[] } = await res.json();
       setConversations(data.conversations);
@@ -115,31 +200,34 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
     }
   }, []);
 
-  // Ganti tab akun: reset seleksi & muat ulang daftar percakapan channel yang baru.
+  // Ganti tab akun: reset seleksi & muat ulang daftar percakapan akun yang baru.
   useEffect(() => {
     setSelectedWaJid(null);
     setShowThreadOnMobile(false);
     setMessages([]);
     setError(null);
-    if (channel === "SERVICE") {
-      pollList("SERVICE");
+    setConnectError(null);
+    setForceReconnectScreen(false);
+    if (accountKey === "SERVICE") {
+      pollList("SERVICE", undefined);
     }
-  }, [channel, pollList]);
+  }, [accountKey, pollList]);
 
   useEffect(() => {
-    if (!secondaryReady) return;
-    const interval = setInterval(() => pollList(channel), LIST_POLL_MS);
+    if (!ready) return;
+    pollList(channel, extraAccountId);
+    const interval = setInterval(() => pollList(channel, extraAccountId), LIST_POLL_MS);
     return () => clearInterval(interval);
-  }, [pollList, channel, secondaryReady]);
+  }, [pollList, channel, extraAccountId, ready]);
 
-  // ---- status koneksi akun kedua (cuma dipoll selagi tab akun kedua aktif) ----
-  const fetchSecondaryStatus = useCallback(async () => {
+  // ---- status koneksi akun ekstra yang sedang dipilih (cuma dipoll selagi belum tersambung) ----
+  const fetchExtraStatus = useCallback(async (id: number) => {
     try {
-      const res = await fetch("/api/inbox/secondary-account/status", { cache: "no-store" });
+      const res = await fetch(`/api/inbox/extra-accounts/${id}/status`, { cache: "no-store" });
       const data: AccountStatus = await res.json();
-      setSecondaryStatus(data);
+      setExtraStatus(data);
     } catch {
-      setSecondaryStatus({
+      setExtraStatus({
         connected: false,
         isConnecting: false,
         waJid: null,
@@ -153,24 +241,21 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
   }, []);
 
   useEffect(() => {
-    if (channel !== "SECONDARY") return;
-    fetchSecondaryStatus();
-    const interval = setInterval(fetchSecondaryStatus, STATUS_POLL_MS);
-    return () => clearInterval(interval);
-  }, [channel, fetchSecondaryStatus]);
-
-  // Begitu akun kedua baru saja tersambung, langsung muat daftar percakapannya.
-  useEffect(() => {
-    if (channel === "SECONDARY" && secondaryStatus?.connected) {
-      pollList("SECONDARY");
+    if (accountKey === "SERVICE") {
+      setExtraStatus(null);
+      return;
     }
-  }, [channel, secondaryStatus?.connected, pollList]);
+    fetchExtraStatus(accountKey);
+    const interval = setInterval(() => fetchExtraStatus(accountKey), STATUS_POLL_MS);
+    return () => clearInterval(interval);
+  }, [accountKey, fetchExtraStatus]);
 
   // ---- muat & poll thread yang sedang dipilih ----
-  const pollThread = useCallback(async (waJid: string, ch: Channel, since?: string) => {
+  const pollThread = useCallback(async (waJid: string, ch: Channel, id: number | undefined, since?: string) => {
     try {
       const url = new URL(`/api/inbox/${encodeURIComponent(waJid)}/messages`, window.location.origin);
       url.searchParams.set("channel", ch);
+      if (id) url.searchParams.set("extraAccountId", String(id));
       if (since) url.searchParams.set("since", since);
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) return null;
@@ -189,7 +274,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
     setError(null);
 
     (async () => {
-      const fresh = await pollThread(selectedWaJid, channel);
+      const fresh = await pollThread(selectedWaJid, channel, extraAccountId);
       if (cancelled || !fresh) return;
       setMessages(fresh);
       latestCreatedAtRef.current = fresh.at(-1)?.createdAt;
@@ -197,7 +282,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
     })();
 
     const interval = setInterval(async () => {
-      const fresh = await pollThread(selectedWaJid, channel, latestCreatedAtRef.current);
+      const fresh = await pollThread(selectedWaJid, channel, extraAccountId, latestCreatedAtRef.current);
       if (cancelled || !fresh || fresh.length === 0) return;
       setMessages((prev) => {
         const seen = new Set(prev.map((m) => m.id));
@@ -211,7 +296,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
       cancelled = true;
       clearInterval(interval);
     };
-  }, [selectedWaJid, channel, pollThread]);
+  }, [selectedWaJid, channel, extraAccountId, pollThread]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -255,7 +340,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
       const res = await fetch(`/api/inbox/${encodeURIComponent(selected.waJid)}/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: trimmed, channel }),
+        body: JSON.stringify({ message: trimmed, channel, extraAccountId }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -267,7 +352,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
         return;
       }
       setText("");
-      const fresh = await pollThread(selected.waJid, channel, latestCreatedAtRef.current);
+      const fresh = await pollThread(selected.waJid, channel, extraAccountId, latestCreatedAtRef.current);
       if (fresh && fresh.length > 0) {
         setMessages((prev) => {
           const seen = new Set(prev.map((m) => m.id));
@@ -276,6 +361,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
         });
         latestCreatedAtRef.current = fresh.at(-1)?.createdAt ?? latestCreatedAtRef.current;
       }
+      pollUnreadCounts();
     } catch {
       setError("Gagal mengirim pesan: koneksi ke server terputus.");
     } finally {
@@ -291,6 +377,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
       const form = new FormData();
       form.append("file", file);
       form.append("channel", channel);
+      if (extraAccountId) form.append("extraAccountId", String(extraAccountId));
       const res = await fetch(`/api/inbox/${encodeURIComponent(selected.waJid)}/send-file`, {
         method: "POST",
         body: form,
@@ -304,7 +391,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
         );
         return;
       }
-      const fresh = await pollThread(selected.waJid, channel, latestCreatedAtRef.current);
+      const fresh = await pollThread(selected.waJid, channel, extraAccountId, latestCreatedAtRef.current);
       if (fresh && fresh.length > 0) {
         setMessages((prev) => {
           const seen = new Set(prev.map((m) => m.id));
@@ -313,6 +400,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
         });
         latestCreatedAtRef.current = fresh.at(-1)?.createdAt ?? latestCreatedAtRef.current;
       }
+      pollUnreadCounts();
     } catch {
       setError("Gagal mengirim file: koneksi ke server terputus.");
     } finally {
@@ -328,28 +416,58 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
     }
   }
 
-  // ---- sambungkan akun kedua ----
+  // ---- tambah akun ekstra baru ----
+  async function handleCreateAccount() {
+    const label = newAccountLabel.trim();
+    if (!label) return;
+    setConnectBusy(true);
+    setConnectError(null);
+    try {
+      const res = await fetch("/api/inbox/extra-accounts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      if (!res.ok) {
+        setConnectError("Gagal membuat akun baru.");
+        return;
+      }
+      const account: { id: number; label: string } = await res.json();
+      setAddingAccount(false);
+      setNewAccountLabel("");
+      await pollAccounts();
+      setAccountKey(account.id);
+    } catch {
+      setConnectError("Gagal membuat akun baru: koneksi ke server terputus.");
+    } finally {
+      setConnectBusy(false);
+    }
+  }
+
+  // ---- sambungkan akun ekstra yang sedang dipilih ----
   async function handleConnectQr() {
+    if (accountKey === "SERVICE") return;
     setConnectError(null);
     setConnectBusy(true);
-    const res = await fetch("/api/inbox/secondary-account/connect-qr", { method: "POST" });
+    const res = await fetch(`/api/inbox/extra-accounts/${accountKey}/connect-qr`, { method: "POST" });
     setConnectBusy(false);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       setConnectError(data.error === "already_connected" ? "Akun sudah terhubung." : "Gagal memulai koneksi.");
       return;
     }
-    fetchSecondaryStatus();
+    fetchExtraStatus(accountKey);
   }
 
   async function handleConnectPairing() {
+    if (accountKey === "SERVICE") return;
     setConnectError(null);
     if (!phoneNumberInput.trim()) {
       setConnectError("Nomor WA wajib diisi (contoh: 6281234567890).");
       return;
     }
     setConnectBusy(true);
-    const res = await fetch("/api/inbox/secondary-account/connect-pairing", {
+    const res = await fetch(`/api/inbox/extra-accounts/${accountKey}/connect-pairing`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ phoneNumber: phoneNumberInput }),
@@ -360,28 +478,47 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
       setConnectError(data.error === "already_connected" ? "Akun sudah terhubung." : "Gagal memulai koneksi.");
       return;
     }
-    fetchSecondaryStatus();
+    fetchExtraStatus(accountKey);
   }
 
-  async function handleLogoutSecondary() {
-    if (!window.confirm("Putuskan akun kedua ini? Perlu disambungkan ulang lewat QR/kode pairing setelahnya.")) {
+  async function handleLogoutExtraAccount() {
+    if (accountKey === "SERVICE") return;
+    if (!window.confirm("Putuskan akun ini? Perlu disambungkan ulang lewat QR/kode pairing setelahnya.")) {
       return;
     }
     setConnectError(null);
     setConnectBusy(true);
-    const res = await fetch("/api/inbox/secondary-account/logout", { method: "POST" });
+    const res = await fetch(`/api/inbox/extra-accounts/${accountKey}/logout`, { method: "POST" });
     setConnectBusy(false);
     if (!res.ok) {
       setConnectError("Gagal memutuskan akun.");
       return;
     }
-    fetchSecondaryStatus();
+    fetchExtraStatus(accountKey);
+    pollAccounts();
+  }
+
+  async function handleDeleteExtraAccount() {
+    if (accountKey === "SERVICE") return;
+    if (!window.confirm("Hapus akun ini sepenuhnya? Riwayat chat-nya tetap tersimpan, tapi tab-nya akan hilang.")) {
+      return;
+    }
+    const idToDelete = accountKey;
+    setConnectBusy(true);
+    const res = await fetch(`/api/inbox/extra-accounts/${idToDelete}`, { method: "DELETE" });
+    setConnectBusy(false);
+    if (!res.ok) {
+      setConnectError("Gagal menghapus akun.");
+      return;
+    }
+    setAccountKey("SERVICE");
+    pollAccounts();
   }
 
   async function handleCopyCode() {
-    if (!secondaryStatus?.pairingCode) return;
+    if (!extraStatus?.pairingCode) return;
     try {
-      await navigator.clipboard.writeText(secondaryStatus.pairingCode);
+      await navigator.clipboard.writeText(extraStatus.pairingCode);
       setCopiedCode(true);
       setTimeout(() => setCopiedCode(false), 1500);
     } catch {
@@ -399,30 +536,104 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
       >
         <div className="border-b border-line px-4 py-3.5">
           <h1 className="font-serif text-lg italic tracking-tight text-ink">Pesan Masuk</h1>
-          <div className="mt-2.5 flex w-fit gap-1 rounded-full border border-line bg-canvas p-1">
+          <div className="mt-2.5 flex flex-wrap items-center gap-1 rounded-lg border border-line bg-canvas p-1">
             <button
               type="button"
-              onClick={() => setChannel("SERVICE")}
-              className={`rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
-                channel === "SERVICE" ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
+              onClick={() => setAccountKey("SERVICE")}
+              className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
+                accountKey === "SERVICE" ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
               }`}
             >
               Bot Layanan
+              <UnreadBadge count={unreadCounts.service} />
             </button>
+            {extraAccounts.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => setAccountKey(a.id)}
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
+                  accountKey === a.id ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
+                }`}
+              >
+                {a.connected && (
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                      accountKey === a.id ? "bg-pastel-green" : "bg-pastel-green-ink"
+                    }`}
+                  />
+                )}
+                {a.label}
+                <UnreadBadge count={unreadCounts.extra[a.id] ?? 0} />
+              </button>
+            ))}
             <button
               type="button"
-              onClick={() => setChannel("SECONDARY")}
-              className={`rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
-                channel === "SECONDARY" ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
-              }`}
+              onClick={() => {
+                setAddingAccount(true);
+                setAccountKey("SERVICE");
+              }}
+              title="Tambah akun"
+              className="rounded-full px-2.5 py-1 text-xs font-medium text-ink-muted transition-colors hover:bg-surface-hover"
             >
-              Akun Kedua
+              +
             </button>
           </div>
-          {secondaryReady && <p className="mt-2 text-[11px] text-ink-muted">{conversations.length} percakapan</p>}
+          {ready && <p className="mt-2 text-[11px] text-ink-muted">{conversations.length} percakapan</p>}
+          {isDisconnected && !addingAccount && (
+            <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-pastel-yellow px-2.5 py-1.5">
+              <p className="text-[10.5px] text-pastel-yellow-ink">
+                Akun terputus - riwayat tetap tersimpan.
+              </p>
+              <button
+                type="button"
+                onClick={() => setForceReconnectScreen(true)}
+                className="shrink-0 text-[10.5px] font-medium text-pastel-yellow-ink underline-offset-2 hover:underline"
+              >
+                Sambungkan ulang
+              </button>
+            </div>
+          )}
         </div>
 
-        {!secondaryReady ? (
+        {addingAccount ? (
+          <div className="flex flex-1 flex-col gap-3 px-4 py-6">
+            <div>
+              <h2 className="text-sm font-medium text-ink">Akun baru</h2>
+              <p className="mt-0.5 text-xs text-ink-muted">
+                Beri nama supaya mudah dibedakan, mis. &quot;Akun Ketiga&quot; atau nama petugasnya.
+              </p>
+            </div>
+            <input
+              value={newAccountLabel}
+              onChange={(e) => setNewAccountLabel(e.target.value)}
+              placeholder="Contoh: Akun Ketiga"
+              autoFocus
+              className="rounded-md border border-line bg-canvas px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink"
+            />
+            {connectError && <p className="text-xs text-pastel-red-ink">{connectError}</p>}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleCreateAccount}
+                disabled={connectBusy || !newAccountLabel.trim()}
+                className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
+              >
+                Buat & Sambungkan
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAddingAccount(false);
+                  setConnectError(null);
+                }}
+                className="rounded-md border border-line px-3.5 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-hover"
+              >
+                Batal
+              </button>
+            </div>
+          </div>
+        ) : !ready ? (
           <div className="flex flex-1 items-center justify-center px-6 py-10">
             <p className="text-sm text-ink-muted">Belum tersambung.</p>
           </div>
@@ -515,24 +726,43 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
         )}
       </div>
 
-      {/* ---------- Panel kanan: thread percakapan, atau layar sambungkan akun kedua ---------- */}
+      {/* ---------- Panel kanan: thread percakapan, atau layar sambungkan akun ---------- */}
       <div className={`flex min-w-0 flex-1 flex-col ${showThreadOnMobile ? "flex" : "hidden md:flex"}`}>
-        {!secondaryReady ? (
+        {addingAccount ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-canvas">
+              <IconUsers className="h-6 w-6 text-ink-faint" />
+            </span>
+            <p className="max-w-xs text-sm text-ink-muted">Isi nama akun di panel kiri, lalu sambungkan lewat QR/kode pairing.</p>
+          </div>
+        ) : !ready ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-10 text-center">
-            {secondaryStatus?.offline ? (
+            {extraStatus?.offline ? (
               <p className="max-w-xs rounded-lg bg-pastel-red px-4 py-3 text-sm text-pastel-red-ink">
                 Proses bot tidak dapat dihubungi. Pastikan proses bot (apps/bot) sedang aktif.
               </p>
-            ) : !secondaryStatus ? (
-              <p className="text-sm text-ink-muted">Memuat status akun kedua...</p>
+            ) : !extraStatus ? (
+              <p className="text-sm text-ink-muted">Memuat status akun...</p>
             ) : (
               <div className="flex w-full max-w-xs flex-col items-center gap-4">
                 <div>
-                  <h2 className="font-serif text-lg italic tracking-tight text-ink">Sambungkan Akun Kedua</h2>
+                  <h2 className="font-serif text-lg italic tracking-tight text-ink">
+                    {forceReconnectScreen ? "Sambungkan Ulang" : "Sambungkan"} {selectedAccountSummary?.label ?? "Akun"}
+                  </h2>
                   <p className="mt-1 text-xs text-ink-muted">
                     Nomor terpisah dari bot layanan, murni perangkat tertaut manual - tidak ada balasan otomatis.
                   </p>
                 </div>
+
+                {forceReconnectScreen && !neverConnected && (
+                  <button
+                    type="button"
+                    onClick={() => setForceReconnectScreen(false)}
+                    className="text-xs text-ink-muted hover:underline"
+                  >
+                    &larr; Batal, lihat riwayat chat dulu
+                  </button>
+                )}
 
                 <div className="flex w-fit gap-1.5 rounded-full border border-line bg-canvas p-1">
                   <button
@@ -566,15 +796,15 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                     >
                       Mulai Sambungkan via QR
                     </button>
-                    {secondaryStatus.isConnecting && !secondaryStatus.qrDataUrl && (
+                    {extraStatus.isConnecting && !extraStatus.qrDataUrl && (
                       <p className="text-xs text-ink-muted">Menyiapkan QR...</p>
                     )}
-                    {secondaryStatus.qrDataUrl && (
+                    {extraStatus.qrDataUrl && (
                       <div className="rounded-xl border border-line bg-canvas p-4">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={secondaryStatus.qrDataUrl} alt="QR akun kedua" width={220} height={220} />
+                        <img src={extraStatus.qrDataUrl} alt="QR akun" width={220} height={220} />
                         <p className="mt-2 max-w-56 text-[11px] text-ink-muted">
-                          Buka WhatsApp di HP nomor kedua &gt; Perangkat Tertaut &gt; Tautkan Perangkat, lalu scan QR ini.
+                          Buka WhatsApp di HP akun ini &gt; Perangkat Tertaut &gt; Tautkan Perangkat, lalu scan QR ini.
                         </p>
                       </div>
                     )}
@@ -596,14 +826,14 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                         Kirim
                       </button>
                     </div>
-                    {secondaryStatus.isConnecting && !secondaryStatus.pairingCode && (
+                    {extraStatus.isConnecting && !extraStatus.pairingCode && (
                       <p className="text-xs text-ink-muted">Membuat kode pairing...</p>
                     )}
-                    {secondaryStatus.pairingCode && (
+                    {extraStatus.pairingCode && (
                       <div className="rounded-xl border border-line bg-canvas p-4">
                         <div className="flex items-center gap-3">
                           <p className="font-mono text-xl font-semibold tracking-widest text-ink">
-                            {secondaryStatus.pairingCode}
+                            {extraStatus.pairingCode}
                           </p>
                           <button
                             onClick={handleCopyCode}
@@ -619,6 +849,10 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                     )}
                   </div>
                 )}
+
+                <button type="button" onClick={handleDeleteExtraAccount} className="text-xs text-pastel-red-ink hover:underline">
+                  Hapus akun ini
+                </button>
               </div>
             )}
           </div>
@@ -630,13 +864,18 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
             <p className="max-w-xs text-sm text-ink-muted">
               Pilih percakapan di sebelah kiri untuk melihat isi pesan dan membalas.
             </p>
-            {channel === "SECONDARY" && secondaryStatus?.phoneNumber && (
+            {isDisconnected && selectedAccountSummary?.phoneNumber && (
               <button
                 type="button"
-                onClick={handleLogoutSecondary}
-                className="text-xs text-pastel-red-ink hover:underline"
+                onClick={() => setForceReconnectScreen(true)}
+                className="text-xs text-pastel-yellow-ink hover:underline"
               >
-                Putuskan akun kedua ({formatPhone(secondaryStatus.phoneNumber)})
+                Akun terputus - sambungkan ulang ({formatPhone(selectedAccountSummary.phoneNumber)})
+              </button>
+            )}
+            {channel === "EXTRA" && !isDisconnected && selectedAccountSummary?.phoneNumber && (
+              <button type="button" onClick={handleLogoutExtraAccount} className="text-xs text-pastel-red-ink hover:underline">
+                Putuskan akun ini ({formatPhone(selectedAccountSummary.phoneNumber)})
               </button>
             )}
           </div>
@@ -669,7 +908,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                     )}
                     {selected.isGroup
                       ? "Grup WA - percakapan manual"
-                      : channel === "SECONDARY"
+                      : channel === "EXTRA"
                         ? "Percakapan manual"
                         : selected.takeoverActive
                           ? "Anda sedang mengambil alih"
@@ -702,11 +941,14 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                 const isImage = Boolean(m.attachmentUrl && m.attachmentMimeType?.startsWith("image/"));
                 const isVideo = Boolean(m.attachmentUrl && m.attachmentMimeType?.startsWith("video/"));
                 const isOtherFile = Boolean(m.attachmentUrl && !isImage && !isVideo);
-                // "[Foto]"/"[Video]"/"[Dokumen]" cuma label generik yang dibuat otomatis saat
-                // menyimpan lampiran (lihat inboxMedia.ts) - tidak perlu ditampilkan lagi
-                // sebagai teks terpisah kalau lampirannya sudah dirender di atasnya.
+                // Stiker tersimpan sebagai image/webp (sama seperti foto) - dibedakan cuma
+                // dari labelnya, dirender lebih kecil & tanpa crop (bukan foto persegi panjang).
+                const isSticker = isImage && m.message === "[Stiker]";
+                // "[Foto]"/"[Video]"/"[Stiker]"/"[Dokumen]" cuma label generik yang dibuat
+                // otomatis saat menyimpan lampiran (lihat inboxMedia.ts) - tidak perlu
+                // ditampilkan lagi sebagai teks terpisah kalau lampirannya sudah dirender.
                 const hideGenericLabel =
-                  (isImage && m.message === "[Foto]") ||
+                  (isImage && (m.message === "[Foto]" || m.message === "[Stiker]")) ||
                   (isVideo && m.message === "[Video]") ||
                   (isOtherFile && m.message === "[Dokumen]");
                 return (
@@ -721,11 +963,18 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                       {isImage && (
                         <a href={m.attachmentUrl!} target="_blank" rel="noopener noreferrer">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={m.attachmentUrl!} alt="Lampiran foto" className="block max-h-72 w-full object-cover" />
+                          <img
+                            src={m.attachmentUrl!}
+                            alt={isSticker ? "Stiker" : "Lampiran foto"}
+                            className={
+                              isSticker
+                                ? "block h-32 w-32 object-contain p-1"
+                                : "block max-h-72 w-full object-cover"
+                            }
+                          />
                         </a>
                       )}
                       {isVideo && (
-                        // eslint-disable-next-line jsx-a11y/media-has-caption
                         <video src={m.attachmentUrl!} controls className="block max-h-72 w-full bg-canvas" />
                       )}
                       {isOtherFile && (
@@ -754,7 +1003,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                     </div>
                     <span className="mt-1 text-[10.5px] text-ink-faint">
                       {m.direction === "OUTBOUND"
-                        ? (m.adminName ?? (channel === "SECONDARY" ? "Dibalas dari HP" : "Petugas"))
+                        ? (m.adminName ?? (channel === "EXTRA" ? "Dibalas dari HP" : "Petugas"))
                         : selected.isGroup
                           ? (m.senderName ?? m.senderNumber ?? "Anggota grup")
                           : "Warga"}{" "}
@@ -769,6 +1018,11 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
             {channel === "SERVICE" && !selected.takeoverActive && !error && (
               <p className="border-t border-line px-5 py-2 text-xs text-ink-muted">
                 Aktifkan &quot;Ambil Alih&quot; untuk membalas pesan ini secara manual.
+              </p>
+            )}
+            {isDisconnected && !error && (
+              <p className="border-t border-line px-5 py-2 text-xs text-ink-muted">
+                Akun ini sedang terputus - riwayat tetap bisa dibaca, tapi sambungkan ulang dulu untuk membalas.
               </p>
             )}
 
@@ -786,7 +1040,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={!selected.takeoverActive || sendingFile}
+                disabled={!selected.takeoverActive || isDisconnected || sendingFile}
                 title="Kirim foto/dokumen"
                 className="flex shrink-0 items-center justify-center rounded-lg border border-line px-3 text-ink-muted transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -796,14 +1050,20 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={handleKeyDown}
-                disabled={!selected.takeoverActive}
-                placeholder={selected.takeoverActive ? "Ketik balasan... (Enter untuk kirim)" : "Ambil alih dulu untuk membalas"}
+                disabled={!selected.takeoverActive || isDisconnected}
+                placeholder={
+                  isDisconnected
+                    ? "Akun terputus - sambungkan ulang untuk membalas"
+                    : selected.takeoverActive
+                      ? "Ketik balasan... (Enter untuk kirim)"
+                      : "Ambil alih dulu untuk membalas"
+                }
                 rows={1}
                 className="flex-1 resize-none rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-faint"
               />
               <button
                 onClick={handleSend}
-                disabled={!selected.takeoverActive || sending || !text.trim()}
+                disabled={!selected.takeoverActive || isDisconnected || sending || !text.trim()}
                 className="shrink-0 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
               >
                 Kirim

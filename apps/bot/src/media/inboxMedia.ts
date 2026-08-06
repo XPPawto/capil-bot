@@ -38,20 +38,22 @@ export async function logInboxMediaIfPresent(
   waNumber: string,
   channel: InboxChannel = "SERVICE",
   group?: GroupMeta,
-  direction: "INBOUND" | "OUTBOUND" = "INBOUND"
+  direction: "INBOUND" | "OUTBOUND" = "INBOUND",
+  extraAccountId?: number
 ): Promise<void> {
   const m = extractMessageContent(msg.message ?? undefined) ?? msg.message;
   if (!m) return;
   const isImage = Boolean(m.imageMessage);
   const isDocument = Boolean(m.documentMessage);
   const isVideo = Boolean(m.videoMessage);
-  // Audio cuma ditangani di sini untuk channel SECONDARY (nomor kedua tidak punya alur
+  const isSticker = Boolean(m.stickerMessage);
+  // Audio cuma ditangani di sini untuk channel EXTRA (akun ekstra tidak punya alur
   // syarat/Request sama sekali). Untuk SERVICE, voice note sudah punya jalur khusus sendiri
   // (media/voiceNote.ts, tersimpan ke RequestMessage) - kalau ikut ditangani di sini juga,
   // hasilnya jadi dobel tampil di thread gabungan /admin-xpawto untuk warga yang sedang
   // punya pengajuan aktif.
-  const isAudio = Boolean(m.audioMessage) && channel === "SECONDARY";
-  if (!isImage && !isDocument && !isAudio && !isVideo) return;
+  const isAudio = Boolean(m.audioMessage) && channel === "EXTRA";
+  if (!isImage && !isDocument && !isAudio && !isVideo && !isSticker) return;
 
   try {
     const buffer = (await downloadMediaMessage(
@@ -77,6 +79,12 @@ export async function logInboxMediaIfPresent(
       realMimeType = m.videoMessage?.mimetype ?? "video/mp4";
       ext = EXT_BY_VIDEO_MIME[realMimeType] ?? "mp4";
       label = "[Video]";
+    } else if (isSticker) {
+      // Stiker WA selalu webp (statis maupun animasi) - "image/webp" supaya UI merender-nya
+      // sebagai <img> apa adanya, sama seperti foto biasa (tidak perlu komponen khusus).
+      realMimeType = "image/webp";
+      ext = "webp";
+      label = "[Stiker]";
     } else {
       // Best-effort: kalau isi filenya bukan salah satu dari 3 tipe yang dikenali sistem
       // ini, lewati saja tanpa error - ini cuma catatan tambahan untuk visibilitas, bukan
@@ -98,6 +106,7 @@ export async function logInboxMediaIfPresent(
         waJid,
         waNumber,
         channel,
+        extraAccountId,
         direction,
         message: label,
         attachmentPath: path.join("_inbox", safeJid, fileName),

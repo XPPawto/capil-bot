@@ -12,6 +12,7 @@ build/
 # Baileys WA session (sensitive - equals account takeover if leaked)
 apps/bot/.baileys_auth/
 apps/bot/.baileys_auth_secondary/
+apps/bot/.baileys_auth_extra/
 
 # uploaded resident documents + temp files (sensitive personal data)
 storage/uploads/

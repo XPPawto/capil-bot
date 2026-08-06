@@ -29,13 +29,22 @@ export interface InboxConversation {
  * memang tidak pernah tersimpan di mana pun.
  *
  * `channel` memisahkan percakapan lewat nomor layanan (SERVICE, ada alur Request/bot) dari
- * nomor kedua (SECONDARY, murni perangkat tertaut manual - tidak ada Request sama sekali,
- * jadi RequestMessage tidak pernah ikut digabung untuk channel ini). Grup WA (isGroup) cuma
- * pernah muncul di channel SECONDARY - handler nomor layanan sengaja tidak memproses grup.
+ * akun ekstra (EXTRA, murni perangkat tertaut manual - tidak ada Request sama sekali, jadi
+ * RequestMessage tidak pernah ikut digabung untuk channel ini). Kalau channel EXTRA, WAJIB
+ * sertakan `extraAccountId` - bisa ada banyak akun ekstra sekaligus (Akun Kedua, Ketiga,
+ * dst), masing-masing punya daftar percakapannya sendiri. Grup WA (isGroup) cuma pernah
+ * muncul di channel EXTRA - handler nomor layanan sengaja tidak memproses grup.
  */
-export async function getInboxConversations(channel: InboxChannel = "SERVICE"): Promise<InboxConversation[]> {
+export async function getInboxConversations(
+  channel: InboxChannel = "SERVICE",
+  extraAccountId?: number
+): Promise<InboxConversation[]> {
   const [recentInbox, requestsWithMessages] = await Promise.all([
-    prisma.inboxMessage.findMany({ where: { channel }, orderBy: { createdAt: "desc" }, take: 1000 }),
+    prisma.inboxMessage.findMany({
+      where: channel === "EXTRA" ? { channel, extraAccountId } : { channel },
+      orderBy: { createdAt: "desc" },
+      take: 1000,
+    }),
     channel === "SERVICE"
       ? prisma.request.findMany({
           where: { messages: { some: {} } },
@@ -130,4 +139,15 @@ export async function getInboxConversations(channel: InboxChannel = "SERVICE"): 
   const takeoverSet = new Set(takeovers.map((t) => t.waJid));
 
   return conversations.map((c) => ({ ...c, takeoverActive: takeoverSet.has(c.waJid) }));
+}
+
+/**
+ * Jumlah percakapan yang pesan terakhirnya dari warga (belum dibalas) - dasar badge
+ * notifikasi di tab akun (/admin-xpawto). Dipanggil terpisah per akun (bukan sekali untuk
+ * semua) supaya badge tetap muncul untuk tab yang SEDANG TIDAK dibuka - kalau cuma
+ * menghitung dari daftar percakapan tab aktif, tab lain tidak akan pernah dapat badge.
+ */
+export async function countNeedsReply(channel: InboxChannel, extraAccountId?: number): Promise<number> {
+  const conversations = await getInboxConversations(channel, extraAccountId);
+  return conversations.filter((c) => c.lastDirection === "INBOUND").length;
 }

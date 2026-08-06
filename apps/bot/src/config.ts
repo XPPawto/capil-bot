@@ -8,12 +8,10 @@ export const config = {
   uploadDir: path.resolve(repoRoot, process.env.UPLOAD_DIR ?? "./storage/uploads"),
   tmpDir: path.resolve(repoRoot, process.env.TMP_DIR ?? "./storage/tmp"),
   waAuthDir: path.resolve(repoRoot, process.env.WA_AUTH_DIR ?? "./apps/bot/.baileys_auth"),
-  // Nomor kedua (perangkat tertaut manual, bukan bot) - folder auth terpisah supaya tidak
-  // rebutan sesi dengan nomor layanan utama.
-  secondaryWaAuthDir: path.resolve(
-    repoRoot,
-    process.env.SECONDARY_WA_AUTH_DIR ?? "./apps/bot/.baileys_auth_secondary"
-  ),
+  // Akun-akun ekstra (perangkat tertaut manual, bukan bot) - satu subfolder per akun
+  // (.../<ExtraAccount.id>/), supaya tiap akun punya sesi Baileys sendiri-sendiri, tidak
+  // rebutan satu sama lain maupun dengan nomor layanan utama.
+  extraAccountAuthDir: path.resolve(repoRoot, process.env.EXTRA_ACCOUNT_AUTH_DIR ?? "./apps/bot/.baileys_auth_extra"),
   maxFileSizeBytes: 10 * 1024 * 1024,
   allowedMimeTypes: ["image/jpeg", "image/png", "application/pdf"],
   conversationTtlHours: 48,

@@ -10,8 +10,8 @@ const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 /**
  * Kirim foto/dokumen ke warga dari halaman Pesan Masuk. Untuk channel SERVICE, wajib sudah
  * "Ambil Alih" percakapan ini dulu (sama seperti balasan teks di route ../messages) supaya
- * bot tidak ikut membalas otomatis bersamaan. Channel SECONDARY tidak punya bot sama sekali
- * jadi tidak butuh syarat itu.
+ * bot tidak ikut membalas otomatis bersamaan. Channel EXTRA tidak punya bot sama sekali
+ * jadi tidak butuh syarat itu - tapi butuh `extraAccountId` untuk tahu socket mana yang dipakai.
  */
 export async function POST(
   req: NextRequest,
@@ -25,7 +25,9 @@ export async function POST(
 
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
-  const channel: InboxChannel = form?.get("channel") === "SECONDARY" ? "SECONDARY" : "SERVICE";
+  const channel: InboxChannel = form?.get("channel") === "EXTRA" ? "EXTRA" : "SERVICE";
+  const extraAccountIdRaw = form?.get("extraAccountId");
+  const extraAccountId = typeof extraAccountIdRaw === "string" && extraAccountIdRaw ? Number(extraAccountIdRaw) : undefined;
 
   if (channel === "SERVICE") {
     const takeover = await prisma.humanTakeover.findUnique({ where: { waJid: decodedWaJid } });
@@ -54,7 +56,7 @@ export async function POST(
   const buffer = Buffer.from(await file.arrayBuffer());
   const fileBase64 = buffer.toString("base64");
 
-  const result = await sendInboxFile(decodedWaJid, file.name, file.type, fileBase64, channel);
+  const result = await sendInboxFile(decodedWaJid, file.name, file.type, fileBase64, channel, extraAccountId);
   if (!result.ok) {
     return NextResponse.json({ error: result.error ?? "send_failed" }, { status: 502 });
   }
@@ -64,6 +66,7 @@ export async function POST(
       waJid: decodedWaJid,
       waNumber,
       channel,
+      extraAccountId,
       direction: "OUTBOUND",
       message: `[File dikirim: ${file.name}]`,
       adminId: guard.admin.id,

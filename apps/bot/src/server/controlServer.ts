@@ -13,8 +13,11 @@ import { sendInboxFile } from "../notify/sendInboxFile";
 import { runBroadcast } from "../notify/broadcast";
 import { logoutSocket, startSocket } from "../wa/socket";
 import { waState } from "../wa/state";
-import { logoutSecondarySocket, startSecondarySocket } from "../wa/secondarySocket";
-import { secondaryWaState } from "../wa/secondaryState";
+import {
+  getExtraAccountRuntimeStatus,
+  logoutExtraAccountSocket,
+  startExtraAccountSocket,
+} from "../wa/extraAccountManager";
 
 /**
  * HTTP kecil yang HANYA bind ke 127.0.0.1 dan dilindungi shared-secret header.
@@ -101,32 +104,74 @@ export function startControlServer(): void {
     res.json({ ok: true });
   });
 
-  // ---- Nomor kedua (perangkat tertaut manual, bukan bot) - dipakai halaman /admin-xpawto ----
+  // ---- Akun ekstra (perangkat tertaut manual, bukan bot) - dipakai halaman /admin-xpawto ----
+  // Bisa lebih dari satu (Akun Kedua, Akun Ketiga, dst), masing-masing dikunci oleh id-nya.
 
-  app.get("/secondary/status", async (_req, res) => {
-    const session = await prisma.secondaryAccountSession.findUnique({ where: { id: 1 } });
+  app.get("/extra-accounts", async (_req, res) => {
+    const accounts = await prisma.extraAccount.findMany({ orderBy: { id: "asc" } });
     res.json({
-      connected: secondaryWaState.connected,
-      isConnecting: secondaryWaState.isConnecting,
-      waJid: session?.waJid ?? null,
-      phoneNumber: session?.phoneNumber ?? null,
-      lastConnectedAt: session?.lastConnectedAt ?? null,
-      qrDataUrl: secondaryWaState.qrDataUrl,
-      pairingCode: secondaryWaState.pairingCode,
+      accounts: accounts.map((a) => ({
+        id: a.id,
+        label: a.label,
+        phoneNumber: a.phoneNumber,
+        lastConnectedAt: a.lastConnectedAt,
+        ...getExtraAccountRuntimeStatus(a.id),
+      })),
     });
   });
 
-  app.post("/secondary/connect-qr", (_req, res) => {
-    if (secondaryWaState.connected) {
+  app.post("/extra-accounts", async (req, res) => {
+    const label = String(req.body?.label ?? "").trim();
+    if (!label) {
+      res.status(400).json({ error: "missing_label" });
+      return;
+    }
+    const account = await prisma.extraAccount.create({ data: { label } });
+    res.json({ id: account.id, label: account.label });
+  });
+
+  app.get("/extra-accounts/:id/status", async (req, res) => {
+    const id = Number(req.params.id);
+    const account = await prisma.extraAccount.findUnique({ where: { id } });
+    if (!account) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    res.json({
+      waJid: account.waJid,
+      phoneNumber: account.phoneNumber,
+      lastConnectedAt: account.lastConnectedAt,
+      // connected/isConnecting/qrDataUrl/pairingCode dari runtime in-memory (live), bukan
+      // kolom DB yang bisa basi sesaat setelah proses restart sebelum reconnect selesai.
+      ...getExtraAccountRuntimeStatus(id),
+    });
+  });
+
+  app.post("/extra-accounts/:id/connect-qr", async (req, res) => {
+    const id = Number(req.params.id);
+    const account = await prisma.extraAccount.findUnique({ where: { id } });
+    if (!account) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    if (account.connected) {
       res.status(409).json({ error: "already_connected" });
       return;
     }
-    startSecondarySocket({ type: "qr" }).catch((err) => logger.error({ err }, "Gagal memulai koneksi akun kedua via QR"));
+    startExtraAccountSocket(id, { type: "qr" }).catch((err) =>
+      logger.error({ err, accountId: id }, "Gagal memulai koneksi akun ekstra via QR")
+    );
     res.json({ ok: true });
   });
 
-  app.post("/secondary/connect-pairing", (req, res) => {
-    if (secondaryWaState.connected) {
+  app.post("/extra-accounts/:id/connect-pairing", async (req, res) => {
+    const id = Number(req.params.id);
+    const account = await prisma.extraAccount.findUnique({ where: { id } });
+    if (!account) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    if (account.connected) {
       res.status(409).json({ error: "already_connected" });
       return;
     }
@@ -135,14 +180,22 @@ export function startControlServer(): void {
       res.status(400).json({ error: "invalid_phone_number" });
       return;
     }
-    startSecondarySocket({ type: "pairing", phoneNumber }).catch((err) =>
-      logger.error({ err }, "Gagal memulai koneksi akun kedua via kode pairing")
+    startExtraAccountSocket(id, { type: "pairing", phoneNumber }).catch((err) =>
+      logger.error({ err, accountId: id }, "Gagal memulai koneksi akun ekstra via kode pairing")
     );
     res.json({ ok: true });
   });
 
-  app.post("/secondary/logout", async (_req, res) => {
-    await logoutSecondarySocket();
+  app.post("/extra-accounts/:id/logout", async (req, res) => {
+    const id = Number(req.params.id);
+    await logoutExtraAccountSocket(id);
+    res.json({ ok: true });
+  });
+
+  app.delete("/extra-accounts/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    await logoutExtraAccountSocket(id).catch(() => undefined);
+    await prisma.extraAccount.delete({ where: { id } }).catch(() => undefined);
     res.json({ ok: true });
   });
 
@@ -211,13 +264,14 @@ export function startControlServer(): void {
   app.post("/notify/inbox-reply", async (req, res) => {
     const waJid = String(req.body?.waJid ?? "");
     const message = String(req.body?.message ?? "");
-    const channel = req.body?.channel === "SECONDARY" ? "SECONDARY" : "SERVICE";
+    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
+    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
     if (!waJid || !message.trim()) {
       res.status(400).json({ error: "missing_fields" });
       return;
     }
     try {
-      await sendInboxReply(waJid, message, channel);
+      await sendInboxReply(waJid, message, channel, extraAccountId);
       res.json({ ok: true });
     } catch (err) {
       logger.error({ err, waJid }, "Gagal mengirim balasan kotak masuk ke warga");
@@ -230,13 +284,14 @@ export function startControlServer(): void {
     const fileName = String(req.body?.fileName ?? "berkas");
     const mimeType = String(req.body?.mimeType ?? "application/octet-stream");
     const fileBase64 = String(req.body?.fileBase64 ?? "");
-    const channel = req.body?.channel === "SECONDARY" ? "SECONDARY" : "SERVICE";
+    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
+    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
     if (!waJid || !fileBase64) {
       res.status(400).json({ error: "missing_fields" });
       return;
     }
     try {
-      await sendInboxFile(waJid, fileName, mimeType, fileBase64, channel);
+      await sendInboxFile(waJid, fileName, mimeType, fileBase64, channel, extraAccountId);
       res.json({ ok: true });
     } catch (err) {
       logger.error({ err, waJid, fileName }, "Gagal mengirim file lewat Pesan Masuk");

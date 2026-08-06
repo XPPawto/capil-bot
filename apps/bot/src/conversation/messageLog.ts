@@ -32,16 +32,18 @@ export interface GroupMeta {
  * Dipanggil untuk SETIAP pesan teks masuk, terlepas dia punya Request aktif atau tidak -
  * dasar dari halaman "Pesan Masuk" di dashboard, supaya petugas bisa lihat siapa saja yang
  * chat bot (termasuk yang sekadar tanya-tanya, belum pernah mengajukan apa pun). `channel`
- * membedakan nomor layanan (SERVICE, default) dari nomor kedua yang bukan bot (SECONDARY).
- * `group` diisi cuma untuk pesan grup (lihat secondaryMessageHandler.ts) - waJid tetap JID
- * grupnya, sementara senderNumber/senderName mencatat siapa yang benar-benar mengirim.
+ * membedakan nomor layanan (SERVICE, default) dari akun ekstra yang bukan bot (EXTRA) -
+ * kalau EXTRA, `extraAccountId` WAJIB diisi supaya tahu akun ekstra mana yang menerimanya
+ * (bisa lebih dari satu, lihat extraAccountMessageHandler.ts). `group` diisi cuma untuk
+ * pesan grup - waJid tetap JID grupnya, senderNumber/senderName mencatat pengirim asli.
  */
 export async function logInboxMessage(
   waJid: string,
   waNumber: string,
   text: string,
   channel: InboxChannel = "SERVICE",
-  group?: GroupMeta
+  group?: GroupMeta,
+  extraAccountId?: number
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -50,6 +52,7 @@ export async function logInboxMessage(
       waJid,
       waNumber,
       channel,
+      extraAccountId,
       direction: "INBOUND",
       message: trimmed,
       isGroup: group?.isGroup ?? false,
@@ -61,7 +64,7 @@ export async function logInboxMessage(
 }
 
 /**
- * Dicatat saat pengirim membalas LANGSUNG dari HP nomor kedua (bukan lewat dashboard
+ * Dicatat saat pengirim membalas LANGSUNG dari HP akun ekstra (bukan lewat dashboard
  * /admin-xpawto) - WhatsApp multi-device tetap mengirim event pesan itu ke kita sebagai
  * perangkat tertaut (lihat sentMessageTracker.ts untuk cara membedakannya dari echo
  * balasan dashboard). adminId sengaja tidak diisi (bukan berasal dari sesi admin manapun)
@@ -71,8 +74,9 @@ export async function logOutboundFromDevice(
   waJid: string,
   waNumber: string,
   text: string,
-  channel: InboxChannel = "SECONDARY",
-  group?: GroupMeta
+  channel: InboxChannel = "EXTRA",
+  group?: GroupMeta,
+  extraAccountId?: number
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -81,6 +85,7 @@ export async function logOutboundFromDevice(
       waJid,
       waNumber,
       channel,
+      extraAccountId,
       direction: "OUTBOUND",
       message: trimmed,
       isGroup: group?.isGroup ?? false,

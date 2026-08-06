@@ -17,15 +17,16 @@ interface ThreadMessage {
 }
 
 function channelFrom(value: string | null): InboxChannel {
-  return value === "SECONDARY" ? "SECONDARY" : "SERVICE";
+  return value === "EXTRA" ? "EXTRA" : "SERVICE";
 }
 
 /**
  * Dipoll berkala oleh halaman Pesan Masuk. Untuk channel SERVICE, menggabungkan dua sumber:
  * InboxMessage (semua pesan mentah sejak fitur ini ada) dan RequestMessage (percakapan bebas
  * lama yang terjadi selagi warga punya Request aktif, dari sebelum fitur ini dibangun) -
- * supaya histori yang MEMANG pernah tersimpan tetap kelihatan utuh. Channel SECONDARY (nomor
- * kedua, bukan bot) tidak pernah punya Request sama sekali, jadi cukup InboxMessage saja.
+ * supaya histori yang MEMANG pernah tersimpan tetap kelihatan utuh. Channel EXTRA (akun
+ * ekstra, bukan bot) tidak pernah punya Request sama sekali, jadi cukup InboxMessage saja -
+ * tapi WAJIB disaring per `extraAccountId` (bisa ada beberapa akun ekstra sekaligus).
  * ?since=<ISO date> membatasi ke pesan yang lebih baru dari yang sudah dipegang klien.
  */
 export async function GET(
@@ -40,10 +41,17 @@ export async function GET(
   const since = req.nextUrl.searchParams.get("since");
   const sinceDate = since ? new Date(since) : undefined;
   const channel = channelFrom(req.nextUrl.searchParams.get("channel"));
+  const extraAccountIdParam = req.nextUrl.searchParams.get("extraAccountId");
+  const extraAccountId = extraAccountIdParam ? Number(extraAccountIdParam) : undefined;
 
   const [inboxRows, requestRows] = await Promise.all([
     prisma.inboxMessage.findMany({
-      where: { waJid: decodedWaJid, channel, ...(sinceDate ? { createdAt: { gt: sinceDate } } : {}) },
+      where: {
+        waJid: decodedWaJid,
+        channel,
+        ...(channel === "EXTRA" ? { extraAccountId } : {}),
+        ...(sinceDate ? { createdAt: { gt: sinceDate } } : {}),
+      },
       orderBy: { createdAt: "asc" },
       include: { admin: true },
     }),
@@ -99,12 +107,13 @@ export async function POST(
   const body = await req.json().catch(() => ({}));
   const message = typeof body?.message === "string" ? body.message.trim() : "";
   const channel = channelFrom(typeof body?.channel === "string" ? body.channel : null);
+  const extraAccountId = body?.extraAccountId ? Number(body.extraAccountId) : undefined;
   if (!message) {
     return NextResponse.json({ error: "empty_message" }, { status: 400 });
   }
 
   // Wajib ambil alih dulu - tapi HANYA untuk nomor layanan (ada bot yang bisa dialihkan
-  // dari mode otomatis). Nomor kedua tidak punya balasan otomatis sama sekali, jadi bisa
+  // dari mode otomatis). Akun ekstra tidak punya balasan otomatis sama sekali, jadi bisa
   // langsung dibalas kapan saja.
   if (channel === "SERVICE") {
     const takeover = await prisma.humanTakeover.findUnique({ where: { waJid: decodedWaJid } });
@@ -124,10 +133,10 @@ export async function POST(
   }
 
   await prisma.inboxMessage.create({
-    data: { waJid: decodedWaJid, waNumber, channel, direction: "OUTBOUND", message, adminId: guard.admin.id },
+    data: { waJid: decodedWaJid, waNumber, channel, extraAccountId, direction: "OUTBOUND", message, adminId: guard.admin.id },
   });
 
-  const sent = await sendInboxReply(decodedWaJid, message, channel);
+  const sent = await sendInboxReply(decodedWaJid, message, channel, extraAccountId);
   if (!sent) {
     return NextResponse.json({ error: "send_failed" }, { status: 502 });
   }

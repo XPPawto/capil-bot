@@ -1,13 +1,17 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/apiGuard";
-import { connectSecondaryQr } from "@/lib/botClient";
+import { connectExtraAccountQr } from "@/lib/botClient";
 
-export async function POST(): Promise<NextResponse> {
+export async function POST(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
 
+  const { id } = await params;
   try {
-    const res = await connectSecondaryQr();
+    const res = await connectExtraAccountQr(Number(id));
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       return NextResponse.json({ error: data.error ?? "failed" }, { status: res.status });

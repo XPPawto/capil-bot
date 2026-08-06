@@ -55,6 +55,36 @@ export async function logInboxMediaIfPresent(
   const isAudio = Boolean(m.audioMessage) && channel === "EXTRA";
   if (!isImage && !isDocument && !isAudio && !isVideo && !isSticker) return;
 
+  // Foto/video "sekali lihat" SENGAJA TIDAK diunduh sama sekali (bukan cuma tidak
+  // ditampilkan) - pengirim secara eksplisit memilih supaya kontennya hilang setelah
+  // dilihat sekali, seringnya justru karena isinya sensitif. Baileys secara teknis BISA
+  // mengunduhnya (batasan "sekali lihat" cuma ditegakkan di aplikasi resmi, bukan di
+  // protokolnya), tapi menyimpannya permanen di sini akan melanggar niat privasi
+  // pengirimnya - cukup dicatat sebagai catatan teks biasa, supaya petugas tahu ada
+  // kiriman semacam itu tanpa ikut menyimpan isinya.
+  if ((isImage && m.imageMessage?.viewOnce) || (isVideo && m.videoMessage?.viewOnce)) {
+    const label = isImage ? "[Foto sekali lihat - tidak disimpan]" : "[Video sekali lihat - tidak disimpan]";
+    try {
+      await prisma.inboxMessage.create({
+        data: {
+          waJid,
+          waNumber,
+          channel,
+          extraAccountId,
+          direction,
+          message: label,
+          isGroup: group?.isGroup ?? false,
+          groupName: group?.groupName,
+          senderNumber: group?.senderNumber,
+          senderName: group?.senderName,
+        },
+      });
+    } catch (err) {
+      logger.warn({ err, waJid }, "Gagal mencatat catatan foto/video sekali lihat");
+    }
+    return;
+  }
+
   try {
     const buffer = (await downloadMediaMessage(
       msg,

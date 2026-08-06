@@ -88,6 +88,25 @@ function formatPhone(waNumber: string): string {
   return `+${digits}`;
 }
 
+const URL_PATTERN = /(https?:\/\/[^\s]+)/g;
+
+/** Jadikan URL di dalam teks pesan (mis. link Google Maps dari share lokasi) bisa diklik. */
+function linkifyText(text: string, linkClassName: string) {
+  // split dengan capturing group menyisipkan bagian yang cocok regex di antara bagian
+  // yang tidak - cukup dicek awalannya, tidak pakai .test() lagi (regex ber-flag "g"
+  // menyimpan state lastIndex antar panggilan, gampang salah kalau dipanggil berulang).
+  const parts = text.split(URL_PATTERN);
+  return parts.map((part, i) =>
+    part.startsWith("http://") || part.startsWith("https://") ? (
+      <a key={i} href={part} target="_blank" rel="noopener noreferrer" className={`underline underline-offset-2 ${linkClassName}`}>
+        {part}
+      </a>
+    ) : (
+      <span key={i}>{part}</span>
+    )
+  );
+}
+
 export function InboxClient({ initialConversations }: { initialConversations: Conversation[] }) {
   const [accountKey, setAccountKey] = useState<AccountKey>("SERVICE");
   const [extraAccounts, setExtraAccounts] = useState<ExtraAccountSummary[]>([]);
@@ -997,7 +1016,11 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                           {selected.isGroup && m.direction === "INBOUND" && m.senderName && (
                             <p className="text-[11px] font-medium text-pastel-blue-ink">{m.senderName}</p>
                           )}
-                          {!hideGenericLabel && <p className="whitespace-pre-wrap">{m.message}</p>}
+                          {!hideGenericLabel && (
+                            <p className="whitespace-pre-wrap">
+                              {linkifyText(m.message, m.direction === "OUTBOUND" ? "text-canvas" : "text-pastel-blue-ink")}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>

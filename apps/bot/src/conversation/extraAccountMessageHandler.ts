@@ -3,7 +3,7 @@ import { logger } from "../logger";
 import { checkRateLimit } from "./rateLimit";
 import { logInboxMessage, logOutboundFromDevice, type GroupMeta } from "./messageLog";
 import { logInboxMediaIfPresent } from "../media/inboxMedia";
-import { extractParticipantNumber, extractText, extractWaNumber } from "./messageHandler";
+import { extractInboxText, extractParticipantNumber, extractWaNumber } from "./messageHandler";
 import { getGroupName } from "../wa/groupNameCache";
 import { wasSentByDashboard } from "../wa/sentMessageTracker";
 
@@ -57,7 +57,7 @@ export async function handleExtraAccountIncomingMessages(
     }
 
     const isGroup = jid.endsWith("@g.us");
-    const text = extractText(msg);
+    const text = extractInboxText(msg);
 
     let waNumber: string;
     let group: GroupMeta | undefined;

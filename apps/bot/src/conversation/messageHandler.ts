@@ -52,6 +52,43 @@ export function extractText(msg: WAMessage): string | undefined {
   return m.conversation ?? m.extendedTextMessage?.text ?? m.imageMessage?.caption ?? m.documentMessage?.caption ?? undefined;
 }
 
+function formatLocationText(loc: { degreesLatitude?: number | null; degreesLongitude?: number | null; name?: string | null; address?: string | null }): string | undefined {
+  const { degreesLatitude: lat, degreesLongitude: lng, name, address } = loc;
+  if (lat == null || lng == null) return undefined;
+  const parts = ["[Lokasi]"];
+  if (name) parts.push(name);
+  if (address) parts.push(address);
+  parts.push(`https://maps.google.com/?q=${lat},${lng}`);
+  return parts.join("\n");
+}
+
+function formatLiveLocationText(loc: { degreesLatitude?: number | null; degreesLongitude?: number | null; caption?: string | null }): string | undefined {
+  const { degreesLatitude: lat, degreesLongitude: lng, caption } = loc;
+  if (lat == null || lng == null) return undefined;
+  const parts = ["[Live Location]"];
+  if (caption) parts.push(caption);
+  parts.push(`https://maps.google.com/?q=${lat},${lng}`);
+  return parts.join("\n");
+}
+
+/**
+ * Sama seperti extractText, TAPI juga mengenali share lokasi/live location - dipakai
+ * KHUSUS untuk pencatatan ke Pesan Masuk (/admin-xpawto), BUKAN untuk input ke alur bot
+ * (handleConversationMessage tetap pakai extractText polos) - supaya warga yang berbagi
+ * lokasi di tengah alur formulir tidak keliru dianggap "mengetik" teks itu sebagai
+ * jawaban nama/dsb oleh mesin percakapan.
+ */
+export function extractInboxText(msg: WAMessage): string | undefined {
+  const plain = extractText(msg);
+  if (plain) return plain;
+  const raw = msg.message;
+  if (!raw) return undefined;
+  const m = extractMessageContent(raw) ?? raw;
+  if (m.locationMessage) return formatLocationText(m.locationMessage);
+  if (m.liveLocationMessage) return formatLiveLocationText(m.liveLocationMessage);
+  return undefined;
+}
+
 export async function handleIncomingMessages(sock: WASocket, payload: MessagesUpsertPayload): Promise<void> {
   if (payload.type !== "notify") return;
 
@@ -75,7 +112,7 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
 
       const isGroup = jid.endsWith("@g.us");
       const waNumber = jid.split("@")[0];
-      const text = extractText(msg);
+      const text = extractInboxText(msg);
       const group: GroupMeta | undefined = isGroup
         ? { isGroup: true, groupName: await getGroupName(sock, jid) }
         : undefined;
@@ -99,7 +136,7 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
       const rateLimitResult = checkRateLimit(jid);
       if (rateLimitResult === "blocked") continue;
 
-      const text = extractText(msg);
+      const text = extractInboxText(msg);
       const senderNumber = extractParticipantNumber(msg);
       const waNumber = senderNumber ?? jid.split("@")[0];
       const group: GroupMeta = {
@@ -128,7 +165,12 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
     }
 
     const waNumber = extractWaNumber(msg, jid);
+    // `text` (polos) dipakai buat alur bot (state machine) - JANGAN diganti versi lokasi,
+    // supaya warga yang berbagi lokasi di tengah formulir tidak keliru dianggap "mengetik"
+    // teks itu sebagai jawaban. `inboxText` (bisa berisi teks lokasi) khusus buat dicatat
+    // ke Pesan Masuk saja.
     const text = extractText(msg);
+    const inboxText = extractInboxText(msg);
 
     // Nama profil WA pengirim (bukan grup) supaya daftar Pesan Masuk bisa menampilkan
     // nama, bukan cuma nomor mentah.
@@ -136,8 +178,8 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
 
     // Dicatat lebih dulu, terlepas dari state/takeover - dasar halaman "Pesan Masuk" yang
     // menampilkan SEMUA nomor yang pernah chat bot, bukan cuma yang punya pengajuan aktif.
-    if (text) {
-      logInboxMessage(jid, waNumber, text, "SERVICE", contact).catch((err) =>
+    if (inboxText) {
+      logInboxMessage(jid, waNumber, inboxText, "SERVICE", contact).catch((err) =>
         logger.error({ err, jid }, "Gagal mencatat pesan ke kotak masuk")
       );
     }
@@ -152,8 +194,8 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
       // harus diam TOTAL (tidak ikut membalas menu/status/dsb), supaya tidak bentrok
       // dengan apa yang sedang diketik petugas. Pesan warga tetap dicatat ke thread chat.
       if (await isHumanTakeoverActive(jid)) {
-        if (text) {
-          await logInboundIfActiveRequest(jid, text).catch((err) =>
+        if (inboxText) {
+          await logInboundIfActiveRequest(jid, inboxText).catch((err) =>
             logger.error({ err, jid }, "Gagal mencatat pesan warga saat mode ambil-alih petugas")
           );
         }

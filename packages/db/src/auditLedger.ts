@@ -44,7 +44,7 @@ function computeHash(prevHash: string, eventType: string, inboxMessageId: number
   return crypto.createHmac(ALGORITHM, getLedgerKey()).update(canonical).digest("hex");
 }
 
-export type LedgerEventType = "MESSAGE_CREATED" | "MESSAGE_EDITED" | "STATUS_CHANGED";
+export type LedgerEventType = "MESSAGE_CREATED" | "MESSAGE_EDITED" | "STATUS_CHANGED" | "MESSAGE_DELETED";
 
 export interface MessageCreatedPayload {
   waJid: string;
@@ -64,6 +64,8 @@ export interface MessageCreatedPayload {
   adminId: number | null;
   waMessageId: string | null;
   createdAt: string;
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface MessageEditedPayload {
@@ -75,6 +77,11 @@ export interface StatusChangedPayload {
   newStatus: string;
 }
 
+/** protocolMessage tipe REVOKE - lihat applyMessageDelete di apps/bot/src/conversation/messageLog.ts. */
+export interface MessageDeletedPayload {
+  deletedAt: string;
+}
+
 /**
  * Tambahkan satu entri ledger baru, dirantai ke entri terakhir yang ada. Retry otomatis kalau
  * ada proses lain (bot ATAU web) menyambung ke ujung rantai yang sama nyaris bersamaan -
@@ -84,7 +91,7 @@ export interface StatusChangedPayload {
 export async function appendLedgerEntry(
   eventType: LedgerEventType,
   inboxMessageId: number,
-  payload: MessageCreatedPayload | MessageEditedPayload | StatusChangedPayload
+  payload: MessageCreatedPayload | MessageEditedPayload | StatusChangedPayload | MessageDeletedPayload
 ): Promise<void> {
   const payloadJson = JSON.stringify(payload);
   for (let attempt = 0; attempt < MAX_APPEND_RETRIES; attempt++) {
@@ -177,6 +184,7 @@ export async function crossCheckLiveState(): Promise<{ mismatches: LiveStateMism
     let expectedStatus: string | null = null;
     let expectedAttachmentSha256: string | null = null;
     let expectedAttachmentPath: string | null = null;
+    let expectedDeletedAt: string | null = null;
 
     for (const e of events) {
       const payload = JSON.parse(e.payload);
@@ -189,6 +197,8 @@ export async function crossCheckLiveState(): Promise<{ mismatches: LiveStateMism
         expectedEditedAt = payload.editedAt;
       } else if (e.eventType === "STATUS_CHANGED") {
         expectedStatus = payload.newStatus;
+      } else if (e.eventType === "MESSAGE_DELETED") {
+        expectedDeletedAt = payload.deletedAt;
       }
     }
 
@@ -207,6 +217,10 @@ export async function crossCheckLiveState(): Promise<{ mismatches: LiveStateMism
     }
     if (expectedAttachmentSha256 && row.attachmentPath) {
       attachmentChecks.push({ inboxMessageId, attachmentPath: row.attachmentPath, expectedSha256: expectedAttachmentSha256 });
+    }
+    const actualDeletedAtIso = row.deletedAt ? row.deletedAt.toISOString() : null;
+    if (expectedDeletedAt !== null && expectedDeletedAt !== actualDeletedAtIso) {
+      mismatches.push({ inboxMessageId, field: "deletedAt", expected: expectedDeletedAt, actual: actualDeletedAtIso });
     }
   }
 

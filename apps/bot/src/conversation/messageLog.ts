@@ -51,6 +51,8 @@ async function createLedgeredInboxMessage(data: Parameters<typeof prisma.inboxMe
       adminId: row.adminId,
       waMessageId: row.waMessageId,
       createdAt: row.createdAt.toISOString(),
+      latitude: row.latitude,
+      longitude: row.longitude,
     });
   } catch (err) {
     logger.error({ err, inboxMessageId: row.id }, "GAGAL menulis jejak audit ledger untuk pesan yang baru dicatat");
@@ -93,6 +95,13 @@ export interface GroupMeta {
   senderName?: string;
 }
 
+/** Koordinat share-lokasi/live-location, kalau pesannya memang lokasi - lihat
+ * extractLocationCoords di messageHandler.ts. */
+export interface LocationCoords {
+  latitude: number;
+  longitude: number;
+}
+
 /**
  * Dipanggil untuk SETIAP pesan teks masuk, terlepas dia punya Request aktif atau tidak -
  * dasar dari halaman "Pesan Masuk" di dashboard, supaya petugas bisa lihat siapa saja yang
@@ -109,7 +118,8 @@ export async function logInboxMessage(
   channel: InboxChannel = "SERVICE",
   group?: GroupMeta,
   extraAccountId?: number,
-  waMessageId?: string
+  waMessageId?: string,
+  coords?: LocationCoords
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -126,6 +136,8 @@ export async function logInboxMessage(
     senderNumber: group?.senderNumber,
     senderName: group?.senderName,
     waMessageId,
+    latitude: coords?.latitude,
+    longitude: coords?.longitude,
   });
 }
 
@@ -143,7 +155,8 @@ export async function logOutboundFromDevice(
   channel: InboxChannel = "EXTRA",
   group?: GroupMeta,
   extraAccountId?: number,
-  waMessageId?: string
+  waMessageId?: string,
+  coords?: LocationCoords
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -160,17 +173,45 @@ export async function logOutboundFromDevice(
     senderNumber: group?.senderNumber,
     senderName: group?.senderName,
     waMessageId,
+    latitude: coords?.latitude,
+    longitude: coords?.longitude,
   });
+}
+
+/**
+ * Cari SEMUA baris InboxMessage yang waMessageId-nya PERSIS cocok - dipakai bersama oleh
+ * applyMessageEdit/applyMessageDelete/updateMessageStatus. SENGAJA `findMany`, bukan
+ * `findFirst`: satu waMessageId asli WhatsApp normalnya cuma cocok ke satu baris, TAPI kalau
+ * pernah ada baris duplikat tercatat untuk pesan yang sama (bug logging terpisah, di luar
+ * cakupan fungsi-fungsi ini), `findFirst` bisa memilih baris yang salah secara tidak
+ * konsisten (urutan hasil query tanpa ORDER BY tidak dijamin stabil) - beberapa duplikat
+ * jadi tidak pernah ikut ter-update walau event edit/hapus/status-nya sudah benar diproses.
+ * Dengan menangani SEMUA baris yang cocok sekaligus, hasilnya konsisten apa pun urutan
+ * baris di database, dan tetap sesuai batasan "HANYA baris pesan yang dimaksud" - duplikat
+ * di sini tetap baris yang sama-sama mewakili SATU pesan WhatsApp asli yang sama persis.
+ */
+async function findMatchingInboxMessageIds(
+  waJid: string,
+  waMessageId: string,
+  channel: InboxChannel,
+  extraAccountId?: number
+): Promise<number[]> {
+  const rows = await prisma.inboxMessage.findMany({
+    where: channel === "EXTRA" ? { waJid, waMessageId, channel, extraAccountId } : { waJid, waMessageId, channel },
+    select: { id: true },
+  });
+  return rows.map((r) => r.id);
 }
 
 /**
  * Dipanggil kalau WhatsApp mengirim event edit pesan (protocolMessage tipe MESSAGE_EDIT) -
  * cari baris InboxMessage yang waMessageId-nya PERSIS cocok (satu pesan asli = satu ID unik
- * dari WhatsApp) lalu update isinya DI TEMPAT. HANYA baris itu yang tersentuh - tidak ada
- * baris lain yang ikut berubah, dan kalau baris yang dicari tidak ketemu (mis. pesan aslinya
- * tidak pernah tercatat, atau dari sebelum fitur ini ada), tidak melakukan apa-apa. Edit ini
- * SENDIRI juga dicatat sebagai entri ledger baru (MESSAGE_EDITED) - jadi perubahan yang sah
- * ini tetap kelihatan jelas di riwayat audit, beda dari perubahan liar yang tidak lewat sini.
+ * dari WhatsApp) lalu update isinya DI TEMPAT. HANYA baris (atau baris-baris, kalau ada
+ * duplikat - lihat findMatchingInboxMessageIds) yang cocok itu yang tersentuh, dan kalau
+ * tidak ketemu sama sekali (mis. pesan aslinya tidak pernah tercatat, atau dari sebelum
+ * fitur ini ada), tidak melakukan apa-apa. Edit ini SENDIRI juga dicatat sebagai entri
+ * ledger baru (MESSAGE_EDITED) per baris - jadi perubahan yang sah ini tetap kelihatan jelas
+ * di riwayat audit, beda dari perubahan liar yang tidak lewat sini.
  */
 export async function applyMessageEdit(
   waJid: string,
@@ -181,18 +222,47 @@ export async function applyMessageEdit(
 ): Promise<boolean> {
   const trimmed = newText.trim();
   if (!trimmed) return false;
-  const target = await prisma.inboxMessage.findFirst({
-    where: channel === "EXTRA" ? { waJid, waMessageId, channel, extraAccountId } : { waJid, waMessageId, channel },
-    select: { id: true },
-  });
-  if (!target) return false;
+  const ids = await findMatchingInboxMessageIds(waJid, waMessageId, channel, extraAccountId);
+  if (ids.length === 0) return false;
 
   const editedAt = new Date();
-  await prisma.inboxMessage.update({ where: { id: target.id }, data: { message: trimmed, editedAt } });
-  try {
-    await appendLedgerEntry("MESSAGE_EDITED", target.id, { newMessage: trimmed, editedAt: editedAt.toISOString() });
-  } catch (err) {
-    logger.error({ err, inboxMessageId: target.id }, "GAGAL menulis jejak audit ledger untuk edit pesan");
+  for (const id of ids) {
+    await prisma.inboxMessage.update({ where: { id }, data: { message: trimmed, editedAt } });
+    try {
+      await appendLedgerEntry("MESSAGE_EDITED", id, { newMessage: trimmed, editedAt: editedAt.toISOString() });
+    } catch (err) {
+      logger.error({ err, inboxMessageId: id }, "GAGAL menulis jejak audit ledger untuk edit pesan");
+    }
+  }
+  return true;
+}
+
+/**
+ * Dipanggil kalau WhatsApp mengirim event hapus pesan (protocolMessage tipe REVOKE, dikirim
+ * saat siapa pun - warga atau kita sendiri - menghapus pesan yang sudah terkirim). Sama
+ * seperti applyMessageEdit, dicari lewat waMessageId dan HANYA baris (atau baris-baris) yang
+ * cocok itu yang tersentuh. Isi `message` SENGAJA TIDAK dihapus/ditimpa - baris cuma
+ * ditandai `deletedAt`, supaya riwayat percakapan tetap utuh untuk keperluan audit (justru
+ * inti dari ledger di atas). Penghapusan ini SENDIRI juga dicatat sebagai entri ledger baru
+ * (MESSAGE_DELETED) per baris.
+ */
+export async function applyMessageDelete(
+  waJid: string,
+  waMessageId: string,
+  channel: InboxChannel,
+  extraAccountId?: number
+): Promise<boolean> {
+  const ids = await findMatchingInboxMessageIds(waJid, waMessageId, channel, extraAccountId);
+  if (ids.length === 0) return false;
+
+  const deletedAt = new Date();
+  for (const id of ids) {
+    await prisma.inboxMessage.update({ where: { id }, data: { deletedAt } });
+    try {
+      await appendLedgerEntry("MESSAGE_DELETED", id, { deletedAt: deletedAt.toISOString() });
+    } catch (err) {
+      logger.error({ err, inboxMessageId: id }, "GAGAL menulis jejak audit ledger untuk penghapusan pesan");
+    }
   }
   return true;
 }
@@ -216,21 +286,26 @@ export async function updateMessageStatus(
   channel: InboxChannel,
   extraAccountId?: number
 ): Promise<boolean> {
-  const existing = await prisma.inboxMessage.findFirst({
+  const existingRows = await prisma.inboxMessage.findMany({
     where:
       channel === "EXTRA"
         ? { waJid, waMessageId, channel, extraAccountId }
         : { waJid, waMessageId, channel },
     select: { id: true, status: true },
   });
-  if (!existing) return false;
-  if (existing.status && STATUS_RANK[existing.status] >= STATUS_RANK[status]) return true;
+  if (existingRows.length === 0) return false;
 
-  await prisma.inboxMessage.update({ where: { id: existing.id }, data: { status } });
-  try {
-    await appendLedgerEntry("STATUS_CHANGED", existing.id, { newStatus: status });
-  } catch (err) {
-    logger.error({ err, inboxMessageId: existing.id }, "GAGAL menulis jejak audit ledger untuk perubahan status pesan");
+  // Sama seperti applyMessageEdit/applyMessageDelete - kalau ada baris duplikat untuk
+  // waMessageId yang sama, SEMUA ikut diperbarui (bukan cuma satu yang dipilih findFirst
+  // secara tidak konsisten), tiap baris tetap dicek "jangan mundur" milik dirinya sendiri.
+  for (const existing of existingRows) {
+    if (existing.status && STATUS_RANK[existing.status] >= STATUS_RANK[status]) continue;
+    await prisma.inboxMessage.update({ where: { id: existing.id }, data: { status } });
+    try {
+      await appendLedgerEntry("STATUS_CHANGED", existing.id, { newStatus: status });
+    } catch (err) {
+      logger.error({ err, inboxMessageId: existing.id }, "GAGAL menulis jejak audit ledger untuk perubahan status pesan");
+    }
   }
   return true;
 }

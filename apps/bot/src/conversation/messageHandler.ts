@@ -7,6 +7,7 @@ import { checkRateLimit } from "./rateLimit";
 import { humanSendMessage } from "../wa/humanSend";
 import { isHumanTakeoverActive } from "./humanTakeover";
 import {
+  applyMessageDelete,
   applyMessageEdit,
   logInboundIfActiveRequest,
   logInboxMessage,
@@ -14,6 +15,7 @@ import {
   resolveKnownWaNumber,
   updateMessageStatus,
   type GroupMeta,
+  type LocationCoords,
 } from "./messageLog";
 import { handleVoiceNote } from "../media/voiceNote";
 import { logInboxMediaIfPresent, logViewOnceUnavailableNote } from "../media/inboxMedia";
@@ -100,6 +102,22 @@ export function extractInboxText(msg: WAMessage): string | undefined {
 }
 
 /**
+ * Koordinat mentah share-lokasi/live-location (kalau ada) - dipakai UI merender pratinjau
+ * peta kecil di bubble chat, terpisah dari extractInboxText yang cuma menghasilkan teks
+ * terformat (tetap dipertahankan untuk kompatibilitas mundur & tautan Google Maps).
+ */
+export function extractLocationCoords(msg: WAMessage): LocationCoords | undefined {
+  const raw = msg.message;
+  if (!raw) return undefined;
+  const m = extractMessageContent(raw) ?? raw;
+  const loc = m.locationMessage ?? m.liveLocationMessage;
+  const lat = loc?.degreesLatitude;
+  const lng = loc?.degreesLongitude;
+  if (lat == null || lng == null) return undefined;
+  return { latitude: lat, longitude: lng };
+}
+
+/**
  * Nomor HP untuk pesan fromMe/balasan-dari-HP (kita yang MENGIRIM, bukan menerima) - beda
  * dari extractWaNumber yang mengandalkan senderPn (itu cuma ada untuk pesan MASUK). Kalau
  * remoteJid warga di-mask WhatsApp sebagai "@lid", jid.split("@")[0] menghasilkan ID
@@ -170,6 +188,41 @@ export async function handleMessageEditIfPresent(
     logger.info({ jid, originalId, channel, extraAccountId, applied, newText }, "Edit pesan diproses");
   } catch (err) {
     logger.error({ err, jid, originalId }, "Gagal menerapkan edit pesan");
+  }
+  return true;
+}
+
+/**
+ * Kalau pesan ini adalah HAPUS (WhatsApp mengirim protocolMessage tipe REVOKE saat siapa pun
+ * - warga atau kita sendiri - menghapus pesan yang sudah terkirim sebelumnya), cari baris
+ * yang tepat lewat waMessageId dan tandai `deletedAt` DI TEMPAT lewat applyMessageDelete -
+ * HANYA baris itu yang tersentuh, isinya sendiri TIDAK dihapus (lihat komentar
+ * applyMessageDelete). Kembalikan true kalau ini memang event hapus (supaya pemanggil tahu
+ * harus berhenti di sini). Dipanggil BERSAMA handleMessageEditIfPresent (bukan digabung ke
+ * situ) karena keduanya sama-sama cuma berlaku untuk protocolMessage dengan `type` berbeda -
+ * fungsi lain akan mengembalikan false diam-diam kalau type-nya tidak cocok dengan miliknya.
+ */
+export async function handleMessageDeleteIfPresent(
+  msg: WAMessage,
+  jid: string,
+  channel: InboxChannel,
+  extraAccountId?: number
+): Promise<boolean> {
+  const protocolMsg = msg.message?.protocolMessage;
+  if (!protocolMsg) return false;
+  if (protocolMsg.type !== proto.Message.ProtocolMessage.Type.REVOKE) return false;
+
+  const originalId = protocolMsg.key?.id;
+  if (!originalId) {
+    logger.warn({ jid }, "Event REVOKE (hapus pesan) diterima tapi tidak ada key.id target - diabaikan");
+    return true;
+  }
+
+  try {
+    const applied = await applyMessageDelete(jid, originalId, channel, extraAccountId);
+    logger.info({ jid, originalId, channel, extraAccountId, applied }, "Penghapusan pesan diproses");
+  } catch (err) {
+    logger.error({ err, jid, originalId }, "Gagal menerapkan penghapusan pesan");
   }
   return true;
 }
@@ -264,8 +317,9 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
     if (!msg.message) continue;
 
     if (await handleMessageEditIfPresent(msg, jid, "SERVICE")) continue;
+    if (await handleMessageDeleteIfPresent(msg, jid, "SERVICE")) continue;
 
-    // Selain edit (ditangani di atas), sisa alur di bawah ini HANYA untuk payload "notify"
+    // Selain edit/hapus (ditangani di atas), sisa alur di bawah ini HANYA untuk payload "notify"
     // (pesan baru sungguhan) - "append" bisa berisi event lain yang bukan pesan baru dan
     // salah kalau ikut diproses sebagai input warga/alur bot.
     if (payload.type !== "notify") continue;
@@ -290,7 +344,9 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
         : undefined;
 
       try {
-        if (text) await logOutboundFromDevice(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined);
+        if (text) {
+          await logOutboundFromDevice(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined, extractLocationCoords(msg));
+        }
         await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group, "OUTBOUND");
       } catch (err) {
         logger.error({ err, jid }, "Gagal mencatat balasan dari HP nomor bot");
@@ -319,7 +375,7 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
       };
 
       try {
-        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined);
+        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined, extractLocationCoords(msg));
         await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group);
       } catch (err) {
         logger.error({ err, jid }, "Gagal mencatat pesan grup ke kotak masuk");
@@ -337,7 +393,7 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
       const group: GroupMeta = { isGroup: false, isChannel: true, groupName: await getChannelName(sock, jid) };
 
       try {
-        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined);
+        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined, extractLocationCoords(msg));
         await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group);
       } catch (err) {
         logger.error({ err, jid }, "Gagal mencatat postingan channel ke kotak masuk");
@@ -369,7 +425,7 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
     // Dicatat lebih dulu, terlepas dari state/takeover - dasar halaman "Pesan Masuk" yang
     // menampilkan SEMUA nomor yang pernah chat bot, bukan cuma yang punya pengajuan aktif.
     if (inboxText) {
-      logInboxMessage(jid, waNumber, inboxText, "SERVICE", contact, undefined, msg.key.id ?? undefined).catch((err) =>
+      logInboxMessage(jid, waNumber, inboxText, "SERVICE", contact, undefined, msg.key.id ?? undefined, extractLocationCoords(msg)).catch((err) =>
         logger.error({ err, jid }, "Gagal mencatat pesan ke kotak masuk")
       );
     }

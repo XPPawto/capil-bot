@@ -5,8 +5,10 @@ import { logInboxMessage, logOutboundFromDevice, type GroupMeta } from "./messag
 import { logInboxMediaIfPresent, logViewOnceUnavailableNote, VIEW_ONCE_UNAVAILABLE_NOTE } from "../media/inboxMedia";
 import {
   extractInboxText,
+  extractLocationCoords,
   extractParticipantNumber,
   extractWaNumber,
+  handleMessageDeleteIfPresent,
   handleMessageEditIfPresent,
   resolveWaNumberForOutbound,
 } from "./messageHandler";
@@ -117,8 +119,9 @@ export async function handleExtraAccountIncomingMessages(
     if (!msg.message) continue;
 
     if (await handleMessageEditIfPresent(msg, jid, "EXTRA", accountId)) continue;
+    if (await handleMessageDeleteIfPresent(msg, jid, "EXTRA", accountId)) continue;
 
-    // Selain edit (ditangani di atas), sisa alur di bawah ini HANYA untuk payload "notify"
+    // Selain edit/hapus (ditangani di atas), sisa alur di bawah ini HANYA untuk payload "notify"
     // (pesan baru sungguhan) - "append" bisa berisi event lain yang bukan pesan baru.
     if (payload.type !== "notify") continue;
 
@@ -177,10 +180,11 @@ export async function handleExtraAccountIncomingMessages(
 
     try {
       if (text) {
+        const coords = extractLocationCoords(msg);
         if (isFromMe) {
-          await logOutboundFromDevice(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined);
+          await logOutboundFromDevice(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined, coords);
         } else {
-          await logInboxMessage(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined);
+          await logInboxMessage(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined, coords);
         }
       }
       await logInboxMediaIfPresent(sock, msg, jid, waNumber, "EXTRA", group, direction, accountId);

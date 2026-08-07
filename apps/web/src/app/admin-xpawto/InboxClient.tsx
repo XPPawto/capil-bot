@@ -48,6 +48,9 @@ interface MessageItem {
   senderNumber: string | null;
   editedAt: string | null;
   status: string | null;
+  deletedAt: string | null;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 interface ExtraAccountSummary {
@@ -89,6 +92,16 @@ const THREAD_POLL_MS = 3000;
 const STATUS_POLL_MS = 2500;
 const ACCOUNTS_POLL_MS = 5000;
 const UNREAD_POLL_MS = 6000;
+
+// Pratinjau peta OpenStreetMap kecil di bubble chat lokasi - dipilih daripada Google Static
+// Maps karena tidak butuh API key/billing (OSM embed publik & gratis), cocok untuk proyek ini
+// yang sengaja menghindari dependency layanan pihak ketiga berbayar. bbox dibuat dari titik
+// lokasi ± delta kecil supaya area sekitarnya kelihatan, bukan cuma satu titik.
+function buildOsmEmbedUrl(lat: number, lng: number): string {
+  const d = 0.006; // kira-kira ±650m, area sekitar 1.3km terlihat
+  const bbox = `${lng - d},${lat - d},${lng + d},${lat + d}`;
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${lat}%2C${lng}`;
+}
 
 // Centang status pesan KELUAR - satu abu-abu (SENT, sudah sampai server WA), dua abu-abu
 // (DELIVERED, sudah sampai HP lawan bicara), dua biru (READ, sudah dibaca/diputar). null
@@ -1168,6 +1181,12 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                 // cuma dari labelnya, lalu dirender bulat & berukuran tetap seperti di
                 // WhatsApp, bukan selebar bubble seperti video biasa.
                 const isVideoNote = isVideo && m.message === "[Video note]";
+                const hasMapPreview = m.latitude != null && m.longitude != null;
+                // Konten TETAP ditampilkan apa adanya (dihapus di WhatsApp tidak berarti
+                // dihapus dari riwayat resmi kita - justru inti fitur ledger audit: sengaja
+                // tidak ada yang bisa menghilang diam-diam) - cuma diberi penanda + sedikit
+                // diredupkan supaya jelas statusnya beda dari pesan yang masih apa adanya.
+                const isDeleted = Boolean(m.deletedAt);
                 const hideGenericLabel =
                   isViewOnce ||
                   isVideoNote ||
@@ -1180,12 +1199,36 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                     <div
                       className={`max-w-[80%] overflow-hidden rounded-2xl text-sm shadow-sm sm:max-w-[65%] ${
                         m.direction === "OUTBOUND" ? "rounded-tr-sm bg-pastel-green" : "rounded-tl-sm bg-surface"
-                      } ${bubbleTextClass}`}
+                      } ${bubbleTextClass} ${isDeleted ? "opacity-60" : ""}`}
                     >
                       {isViewOnce && (
                         <div className="flex items-center gap-1.5 px-3.5 pb-1 pt-2 text-[10.5px] font-medium uppercase tracking-wide opacity-70">
                           <IconViewOnce className="h-3.5 w-3.5 shrink-0" />
                           Sekali lihat
+                        </div>
+                      )}
+                      {isDeleted && (
+                        <div className="flex items-center gap-1.5 px-3.5 pb-1 pt-2 text-[10.5px] font-medium uppercase tracking-wide text-pastel-red-ink">
+                          <IconClose className="h-3.5 w-3.5 shrink-0" />
+                          Dihapus pengirim
+                        </div>
+                      )}
+                      {hasMapPreview && (
+                        <div className="border-b border-line/60">
+                          <iframe
+                            src={buildOsmEmbedUrl(m.latitude!, m.longitude!)}
+                            className="block h-40 w-full border-0"
+                            loading="lazy"
+                            title="Pratinjau lokasi"
+                          />
+                          <a
+                            href={`https://maps.google.com/?q=${m.latitude},${m.longitude}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-center gap-1 px-2 py-1.5 text-[10.5px] font-medium text-pastel-blue-ink hover:underline"
+                          >
+                            Buka di Google Maps ↗
+                          </a>
                         </div>
                       )}
                       {isImage && (

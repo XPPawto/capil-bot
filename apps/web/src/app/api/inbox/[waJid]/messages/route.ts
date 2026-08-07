@@ -17,6 +17,9 @@ interface ThreadMessage {
   senderNumber: string | null;
   editedAt: string | null;
   status: string | null;
+  deletedAt: string | null;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 function channelFrom(value: string | null): InboxChannel {
@@ -83,6 +86,9 @@ export async function GET(
       senderNumber: m.senderNumber ?? null,
       editedAt: m.editedAt ? m.editedAt.toISOString() : null,
       status: m.status ?? null,
+      deletedAt: m.deletedAt ? m.deletedAt.toISOString() : null,
+      latitude: m.latitude ?? null,
+      longitude: m.longitude ?? null,
     })),
     ...requestRows.map((m) => ({
       id: `r${m.id}`,
@@ -96,6 +102,9 @@ export async function GET(
       senderNumber: null,
       editedAt: null,
       status: null,
+      deletedAt: null,
+      latitude: null,
+      longitude: null,
     })),
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 

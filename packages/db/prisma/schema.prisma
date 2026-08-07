@@ -339,6 +339,17 @@ model InboxMessage {
   // di messageHandler.ts). Tetap null untuk pesan MASUK (tidak relevan) dan pesan lama dari
   // sebelum fitur ini dibangun (tidak retroaktif, tidak ada datanya).
   status             String?
+  // Diisi lewat protocolMessage tipe REVOKE (WhatsApp mengirim ini saat siapa pun menghapus
+  // pesan yang sudah terkirim) - lihat applyMessageDelete di messageLog.ts. Isi `message`
+  // SENGAJA TIDAK dihapus/ditimpa - baris ini cuma ditandai, supaya riwayat percakapan tetap
+  // utuh untuk keperluan audit (justru inti dari fitur ledger di atas), UI cukup menampilkan
+  // penanda "dihapus" di sampingnya.
+  deletedAt          DateTime?
+  // Koordinat share-lokasi/live-location (kalau ada) - dipakai UI merender pratinjau peta
+  // kecil di bubble chat, bukan cuma tautan Google Maps polos seperti sebelumnya. `message`
+  // tetap menyimpan teks terformat lengkap (termasuk link) untuk kompatibilitas mundur.
+  latitude           Float?
+  longitude          Float?
 
   @@index([waJid])
   @@index([channel])

@@ -11,6 +11,7 @@ import { config } from "../config";
 import { logger } from "../logger";
 import { handleIncomingMessages, handleMessageStatusUpdates } from "../conversation/messageHandler";
 import { handleIncomingCalls } from "../conversation/callHandler";
+import { registerPresenceListener } from "./presenceTracker";
 import { getBackoffDelay, getDisconnectStatusCode, markBotConnected, markBotDisconnected } from "./connection";
 import { waState } from "./state";
 
@@ -128,6 +129,8 @@ export async function startSocket(mode: ConnectMode = { type: "qr" }): Promise<v
     sock.ev.on("call", (events) => {
       handleIncomingCalls(sock, events).catch((err) => logger.error({ err }, "Gagal memproses panggilan masuk"));
     });
+
+    registerPresenceListener(sock, "SERVICE");
   } catch (err) {
     waState.isConnecting = false;
     throw err;

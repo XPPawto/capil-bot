@@ -5,12 +5,14 @@ import { startExpiredConversationCleanup } from "./jobs/expireConversations";
 import { startPickupReminderJob } from "./jobs/remindPendingPickup";
 import { startAbandonedConversationReminder } from "./jobs/remindAbandonedConversations";
 import { warmRequirementsCache } from "./conversation/requirements";
+import { startTelegramCommandListener } from "./notify/telegramCommands";
 import { startSocket } from "./wa/socket";
 import { markBotDisconnected } from "./wa/connection";
 import { markAllExtraAccountsDisconnected, startAllExtraAccountSockets } from "./wa/extraAccountManager";
 
 async function main(): Promise<void> {
   startControlServer();
+  startTelegramCommandListener();
   startReconciler();
   startExpiredConversationCleanup();
   startPickupReminderJob();

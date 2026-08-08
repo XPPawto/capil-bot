@@ -20,7 +20,7 @@ import { config } from "../config";
  * media gagal diteruskan, dsb) TIDAK BOLEH mengganggu pencatatan pesan ke /admin-xpawto
  * maupun pengiriman balasan WA yang sesungguhnya - cuma dicatat sebagai warning di log.
  */
-const TELEGRAM_NOTIFY_ACCOUNT_ID = 1;
+export const TELEGRAM_NOTIFY_ACCOUNT_ID = 1;
 
 /**
  * "inbound" - chat baru dari warga/orang lain (masuk).
@@ -38,14 +38,95 @@ interface ChatMeta {
   waNumber: string;
 }
 
-function buildHeader(kind: ChatEventKind, meta: ChatMeta): string {
-  if (kind === "outbound_dashboard") return `✅ Balasan terkirim lewat dashboard (Akun Kedua)\nKe: ${meta.waNumber}`;
-  if (kind === "outbound_device") return `\u{1F4F1} Balasan dari HP (Akun Kedua)\nKe: ${meta.waNumber}`;
-  if (meta.isChannel) return `\u{1F4E2} Postingan channel baru (Akun Kedua)\nChannel: ${meta.groupName ?? "-"}`;
-  if (meta.isGroup) {
-    return `\u{1F4AC} Chat grup baru (Akun Kedua)\nGrup: ${meta.groupName ?? "-"}\nDari: ${meta.senderName ?? meta.senderNumber ?? "-"}`;
+/**
+ * PENTING (permintaan pemilik: notifikasi Telegram "berantakan banget kalau chatnya lagi
+ * rame, bikin pusing") - dua masalah nyata di format LAMA:
+ *  1. Setiap notifikasi selalu 3+ baris (header 2 baris + baris kosong + isi) padahal SEMUA
+ *     notifikasi di sini SUDAH PASTI dari akun yang sama ("Akun Kedua", TELEGRAM_NOTIFY_
+ *     ACCOUNT_ID di atas) - label itu diulang di HAMPIR SETIAP baris tanpa pernah berubah,
+ *     murni pemborosan ruang layar yang tidak menyampaikan informasi baru apa pun.
+ *  2. Kalau ada beberapa percakapan aktif BERGANTIAN dalam waktu berdekatan (skenario
+ *     "rame" yang dikeluhkan), pesannya jadi satu aliran panjang tanpa penanda visual mana
+ *     yang dari siapa - mata harus baca ulang tiap baris "Dari:"/"Ke:" satu-satu.
+ *
+ * Solusi TANPA infrastruktur baru (bukan pindah ke grup Forum Telegram, yang butuh setup
+ * manual pemilik - lihat percakapan fitur ini): tag warna deterministik per percakapan
+ * (conversationTag) supaya mata bisa cepat mengelompokkan notifikasi yang berdekatan tanpa
+ * baca ulang nama, DITAMBAH header lengkap (nama/nomor) cuma diulang kalau percakapannya
+ * benar-benar GANTI dari notifikasi sebelumnya (shouldShowFullHeader) - beberapa pesan
+ * beruntun dari orang yang SAMA jadi jauh lebih ringkas, persis bagaimana aplikasi chat asli
+ * mengelompokkan bubble tanpa mengulang avatar/nama tiap baris.
+ */
+const CONVERSATION_TAGS = ["🟥", "🟧", "🟨", "🟩", "🟦", "🟪", "🟫", "⬛", "⬜"];
+function conversationTag(key: string): string {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return CONVERSATION_TAGS[hash % CONVERSATION_TAGS.length];
+}
+
+function conversationKey(meta: ChatMeta): string {
+  if (meta.isChannel) return `channel:${meta.groupName ?? "-"}`;
+  if (meta.isGroup) return `group:${meta.groupName ?? "-"}`;
+  return `dm:${meta.waNumber}`;
+}
+
+// Jeda sebelum header lengkap ditampilkan ulang WALAU percakapannya sama persis dengan
+// notifikasi sebelumnya - supaya percakapan yang sempat lama tidak aktif tidak muncul lagi
+// tanpa konteks nama/nomor sama sekali kalau tiba-tiba aktif lagi setelah jeda panjang.
+const HEADER_REPEAT_WINDOW_MS = 90_000;
+// State ini SENGAJA murni in-memory (bukan disimpan ke DB) - sama seperti presence, cuma
+// mempengaruhi TAMPILAN notifikasi berikutnya, tidak ada nilai historis untuk diaudit.
+// Per accountId walau saat ini cuma accountId 1 yang pernah benar-benar lewat sini.
+const lastNotified = new Map<number, { key: string; at: number }>();
+
+function shouldShowFullHeader(accountId: number, key: string): boolean {
+  const last = lastNotified.get(accountId);
+  lastNotified.set(accountId, { key, at: Date.now() });
+  return !last || last.key !== key || Date.now() - last.at > HEADER_REPEAT_WINDOW_MS;
+}
+
+function directionMark(kind: ChatEventKind): string {
+  if (kind === "outbound_dashboard") return "✅ ";
+  if (kind === "outbound_device") return "\u{1F4F1} ";
+  return "";
+}
+
+interface HeaderResult {
+  text: string;
+  // Header super pendek (cuma tag warna, atau tag + penanda arah) - digabung SATU baris
+  // dengan isi pesannya (lihat composeMessage) supaya tidak ada baris terbuang cuma untuk
+  // menampilkan 1-2 karakter tag doang. Header yang masih ada nama/nomor tetap baris sendiri
+  // (lebih enak dipindai kalau ini memang notifikasi "kartu baru").
+  oneLine: boolean;
+}
+
+function buildHeader(accountId: number, kind: ChatEventKind, meta: ChatMeta): HeaderResult {
+  const key = conversationKey(meta);
+  const tag = conversationTag(key);
+  const mark = directionMark(kind);
+  const showFull = shouldShowFullHeader(accountId, key);
+
+  if (meta.isChannel) {
+    return showFull
+      ? { text: `${tag} \u{1F4E2} ${meta.groupName ?? "Channel"}`, oneLine: false }
+      : { text: tag, oneLine: true };
   }
-  return `\u{1F4AC} Chat baru (Akun Kedua)\nDari: ${meta.senderName ? `${meta.senderName} (${meta.waNumber})` : meta.waNumber}`;
+  if (meta.isGroup) {
+    // Nama grup cuma diulang kalau grupnya beda dari notifikasi sebelumnya - siapa yang
+    // bicara TETAP selalu ditampilkan (satu grup bisa banyak pengirim berbeda-beda, beda
+    // dari chat 1:1 di bawah yang lawan bicaranya cuma satu orang, aman disingkat total).
+    const who = kind === "inbound" ? (meta.senderName ?? meta.senderNumber ?? "-") : "Anda";
+    return showFull
+      ? { text: `${tag} \u{1F465} ${meta.groupName ?? "Grup"} \u{00B7} ${who}`, oneLine: false }
+      : { text: `${tag} ${who}:`, oneLine: true };
+  }
+  if (!showFull) return { text: `${tag} ${mark}`.trimEnd(), oneLine: true };
+  const who = meta.senderName ? `${meta.senderName} (${meta.waNumber})` : meta.waNumber;
+  return { text: `${tag} ${mark}${who}`.trimEnd(), oneLine: false };
+}
+
+function composeMessage(header: HeaderResult, body: string): string {
+  return header.oneLine ? `${header.text} ${body}` : `${header.text}\n${body}`;
 }
 
 function isTelegramEnabled(accountId: number): { botToken: string; chatId: string } | null {
@@ -134,7 +215,7 @@ export async function forwardTelegramChatActivity(
   const creds = isTelegramEnabled(accountId);
   if (!creds) return;
 
-  const header = buildHeader(kind, meta);
+  const header = buildHeader(accountId, kind, meta);
 
   const raw = msg.message;
   const m = raw ? (extractMessageContent(raw) ?? raw) : undefined;
@@ -156,7 +237,7 @@ export async function forwardTelegramChatActivity(
   const isViewOnceFlag = Boolean((isImage && m?.imageMessage?.viewOnce) || (isVideo && m?.videoMessage?.viewOnce));
   if ((isImage || isVideo) && (isViewOnceWrapper || isViewOnceFlag)) {
     const label = isImage ? "[Foto sekali lihat - tidak diteruskan]" : "[Video sekali lihat - tidak diteruskan]";
-    await sendTelegramText(creds.botToken, creds.chatId, `${header}\n\n${label}`);
+    await sendTelegramText(creds.botToken, creds.chatId, composeMessage(header, label));
     return;
   }
 
@@ -168,7 +249,7 @@ export async function forwardTelegramChatActivity(
         {},
         { logger: logger.child({ module: "telegram-media" }) as any, reuploadRequest: sock.updateMediaMessage }
       )) as Buffer;
-      const caption = `${header}${text ? `\n\n${text}` : ""}`;
+      const caption = text ? composeMessage(header, text) : header.text;
       // Video note diteruskan lewat sendVideo biasa (video/mp4), BUKAN sendVideoNote milik
       // Telegram yang bentuknya memang lebih mirip: metode itu tidak menerima caption sama
       // sekali, sehingga keterangan siapa pengirimnya - justru inti notifikasi ini - akan
@@ -194,7 +275,7 @@ export async function forwardTelegramChatActivity(
   }
 
   const bodyText = text?.trim() || "[Pesan tanpa teks]";
-  await sendTelegramText(creds.botToken, creds.chatId, `${header}\n\n${bodyText}`);
+  await sendTelegramText(creds.botToken, creds.chatId, composeMessage(header, bodyText));
 }
 
 /**
@@ -213,6 +294,31 @@ export async function notifyTelegramChatEvent(
 ): Promise<void> {
   const creds = isTelegramEnabled(accountId);
   if (!creds) return;
-  const header = buildHeader(opts.kind, { ...opts.meta, waNumber: opts.waNumber });
-  await sendTelegramText(creds.botToken, creds.chatId, `${header}\n\n${opts.text}`);
+  const header = buildHeader(accountId, opts.kind, { ...opts.meta, waNumber: opts.waNumber });
+  await sendTelegramText(creds.botToken, creds.chatId, composeMessage(header, opts.text));
+}
+
+/** Reaksi emoji ke pesan (💗👍😂 dst) - emoji kosong berarti reaksinya dibatalkan. Dipanggil
+ * dari extraAccountMessageHandler.ts, terpisah dari forwardTelegramChatActivity karena
+ * reactionMessage bukan "chat baru" biasa (tidak ada isinya untuk diunduh/diteruskan).
+ *
+ * `attached` = apakah reaksinya berhasil ditempelkan ke pesan yang benar-benar ada di
+ * /admin-xpawto. Bisa `false` kalau pesan aslinya tidak pernah tersimpan di InboxMessage
+ * (mis. gagal decrypt sesi WA saat pesan itu pertama masuk) - tanpa penanda ini, notifikasi
+ * Telegram terkesan "berhasil" padahal di website tidak akan muncul apa-apa, membingungkan. */
+export async function notifyTelegramReaction(
+  accountId: number,
+  opts: { waNumber: string; reactorName: string; emoji: string; isGroup?: boolean; groupName?: string; attached: boolean }
+): Promise<void> {
+  const creds = isTelegramEnabled(accountId);
+  if (!creds) return;
+  const tag = conversationTag(opts.isGroup ? `group:${opts.groupName ?? "-"}` : `dm:${opts.waNumber}`);
+  const target = opts.isGroup ? `grup ${opts.groupName ?? "-"}` : opts.waNumber;
+  const text = opts.emoji
+    ? `${tag} ${opts.emoji} Reaksi dari ${opts.reactorName} \u{00B7} ${target}`
+    : `${tag} Reaksi dibatalkan \u{00B7} ${opts.reactorName} \u{00B7} ${target}`;
+  const note = opts.attached
+    ? ""
+    : "\n⚠️ Pesan aslinya tidak tersimpan di Pesan Masuk (kemungkinan gagal ter-sinkron saat masuk), jadi reaksi ini TIDAK akan tampil di /admin-xpawto.";
+  await sendTelegramText(creds.botToken, creds.chatId, `${text}${note}`);
 }

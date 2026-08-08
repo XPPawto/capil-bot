@@ -5,8 +5,15 @@ import { prisma } from "@/lib/prisma";
 import { appendLedgerEntry } from "@kelurahan/db";
 import type { InboxChannel } from "@prisma/client";
 
+interface ThreadReaction {
+  reactorJid: string;
+  reactorName: string | null;
+  emoji: string;
+}
+
 interface ThreadMessage {
   id: string;
+  waMessageId: string | null;
   direction: "OUTBOUND" | "INBOUND";
   message: string;
   createdAt: string;
@@ -20,6 +27,10 @@ interface ThreadMessage {
   deletedAt: string | null;
   latitude: number | null;
   longitude: number | null;
+  reactions: ThreadReaction[];
+  isForwarded: boolean;
+  quotedWaMessageId: string | null;
+  quotedPreview: string | null;
 }
 
 function channelFrom(value: string | null): InboxChannel {
@@ -73,9 +84,25 @@ export async function GET(
       : Promise.resolve([]),
   ]);
 
+  // Reaksi cuma pernah ada untuk baris InboxMessage (RequestMessage lama tidak punya jalur
+  // reaksi sama sekali) - diambil sekaligus per batch, bukan satu-satu per pesan, supaya
+  // polling berkala halaman ini tidak memicu N query terpisah.
+  const reactionRows = inboxRows.length
+    ? await prisma.messageReaction.findMany({
+        where: { inboxMessageId: { in: inboxRows.map((m) => m.id) }, emoji: { not: "" } },
+      })
+    : [];
+  const reactionsByMessageId = new Map<number, ThreadReaction[]>();
+  for (const r of reactionRows) {
+    const list = reactionsByMessageId.get(r.inboxMessageId) ?? [];
+    list.push({ reactorJid: r.reactorJid, reactorName: r.reactorName, emoji: r.emoji });
+    reactionsByMessageId.set(r.inboxMessageId, list);
+  }
+
   const messages: ThreadMessage[] = [
     ...inboxRows.map((m) => ({
       id: `i${m.id}`,
+      waMessageId: m.waMessageId ?? null,
       direction: m.direction,
       message: m.message,
       createdAt: m.createdAt.toISOString(),
@@ -89,9 +116,14 @@ export async function GET(
       deletedAt: m.deletedAt ? m.deletedAt.toISOString() : null,
       latitude: m.latitude ?? null,
       longitude: m.longitude ?? null,
+      reactions: reactionsByMessageId.get(m.id) ?? [],
+      isForwarded: m.isForwarded,
+      quotedWaMessageId: m.quotedWaMessageId ?? null,
+      quotedPreview: m.quotedPreview ?? null,
     })),
     ...requestRows.map((m) => ({
       id: `r${m.id}`,
+      waMessageId: null,
       direction: m.direction,
       message: m.message,
       createdAt: m.createdAt.toISOString(),
@@ -105,6 +137,10 @@ export async function GET(
       deletedAt: null,
       latitude: null,
       longitude: null,
+      reactions: [],
+      isForwarded: false,
+      quotedWaMessageId: null,
+      quotedPreview: null,
     })),
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 

@@ -15,6 +15,7 @@ import type { ConnectMode } from "./socket";
 import { handleExtraAccountIncomingMessages } from "../conversation/extraAccountMessageHandler";
 import { handleMessageStatusUpdates } from "../conversation/messageHandler";
 import { handleExtraAccountCalls } from "../conversation/extraAccountCallHandler";
+import { registerPresenceListener } from "./presenceTracker";
 
 interface ExtraAccountRuntime {
   sock: WASocket | null;
@@ -190,6 +191,8 @@ export async function startExtraAccountSocket(accountId: number, mode: ConnectMo
         logger.error({ err, accountId }, "Gagal mencatat panggilan akun ekstra")
       );
     });
+
+    registerPresenceListener(sock, "EXTRA", accountId);
   } catch (err) {
     runtime.isConnecting = false;
     throw err;

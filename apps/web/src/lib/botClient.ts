@@ -181,6 +181,61 @@ export async function sendInboxFile(
   }
 }
 
+export interface AvatarFetchResult {
+  hasPhoto: boolean;
+  relativePath: string | null;
+  mimeType: string | null;
+}
+
+/**
+ * Minta bot ambil foto profil/ikon grup langsung dari WA (lewat socket channel/akun yang
+ * sesuai) dan simpan ke disk. Dipanggil API route /api/inbox/avatar - PEMANGGIL yang
+ * bertanggung jawab menahan diri (cache dengan TTL) supaya tidak memanggil ini tiap kali
+ * halaman dibuka, lihat komentar model ContactAvatar di schema.prisma.
+ */
+export async function fetchAvatarFromBot(
+  waJid: string,
+  channel: "SERVICE" | "EXTRA" = "SERVICE",
+  extraAccountId?: number
+): Promise<AvatarFetchResult | null> {
+  try {
+    const res = await callControlServer("/avatar", {
+      method: "POST",
+      body: JSON.stringify({ waJid, channel, extraAccountId }),
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export interface PresenceResult {
+  status: string | null; // unavailable | available | composing | recording | paused | null (belum diketahui)
+  lastSeen: number | null;
+}
+
+/**
+ * Status online & "sedang mengetik..." - lihat wa/presenceTracker.ts di sisi bot untuk
+ * mekanisme lengkapnya (subscribe sekali per percakapan, dibaca live dari cache in-memory).
+ */
+export async function fetchPresenceFromBot(
+  waJid: string,
+  channel: "SERVICE" | "EXTRA" = "SERVICE",
+  extraAccountId?: number
+): Promise<PresenceResult | null> {
+  try {
+    const res = await callControlServer("/presence", {
+      method: "POST",
+      body: JSON.stringify({ waJid, channel, extraAccountId }),
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
 export interface ExtraAccountSummary {
   id: number;
   label: string;

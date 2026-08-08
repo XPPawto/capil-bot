@@ -40,11 +40,30 @@ export async function getInboxConversations(
   channel: InboxChannel = "SERVICE",
   extraAccountId?: number
 ): Promise<InboxConversation[]> {
-  const [recentInbox, requestsWithMessages] = await Promise.all([
+  const baseWhere = channel === "EXTRA" ? { channel, extraAccountId } : { channel };
+
+  // PENTING: dulu ini pakai `take: 1000` diurutkan createdAt desc LINTAS SEMUA percakapan,
+  // niatnya cuma batas wajar - tapi akun yang ramai (nomor kedua, 1800+ baris) bisa punya
+  // 1000 baris terbaru itu semuanya berasal dari SATU-DUA percakapan paling aktif, sehingga
+  // percakapan lain yang jarang chat tergeser habis dari jendela dan HILANG TOTAL dari daftar
+  // walau pesannya masih ada di database (dibuktikan: 10 dari 18 percakapan akun ini hilang).
+  // `distinct: ["waJid"]` + orderBy desc membuat Prisma/MySQL ambil TEPAT satu baris (yang
+  // paling baru) PER percakapan, jadi tidak ada percakapan yang bisa tergeser oleh percakapan
+  // lain yang lebih ramai.
+  const [latestPerWaJid, latestInboundPerWaJid, requestsWithMessages] = await Promise.all([
     prisma.inboxMessage.findMany({
-      where: channel === "EXTRA" ? { channel, extraAccountId } : { channel },
+      where: baseWhere,
       orderBy: { createdAt: "desc" },
-      take: 1000,
+      distinct: ["waJid"],
+    }),
+    // Kueri terpisah, khusus pesan MASUK - dipakai untuk nama kontak & nomor HP yang
+    // ditampilkan (lihat komentar di bawah), yang harus berasal dari pesan masuk PALING BARU,
+    // bukan cuma "pesan apa pun paling baru" (bisa jadi balasan kita sendiri).
+    prisma.inboxMessage.findMany({
+      where: { ...baseWhere, direction: "INBOUND" },
+      orderBy: { createdAt: "desc" },
+      distinct: ["waJid"],
+      select: { waJid: true, waNumber: true, senderName: true, isGroup: true, isChannel: true },
     }),
     channel === "SERVICE"
       ? prisma.request.findMany({
@@ -72,31 +91,19 @@ export async function getInboxConversations(
     }
   >();
 
-  // Nama kontak dilacak terpisah dari "pesan terakhir" - pesan terakhir bisa saja balasan
-  // KITA (tidak punya senderName), padahal kita tetap ingin tahu nama profil WA lawan
-  // bicaranya dari pesan MASUK mereka yang paling baru. recentInbox sudah terurut desc,
-  // jadi kemunculan pertama per waJid otomatis yang paling baru.
+  // Nama kontak & nomor HP yang DITAMPILKAN dilacak terpisah dari "pesan terakhir" - pesan
+  // terakhir bisa saja balasan KITA (tidak punya senderName, dan kalau JID-nya di-mask
+  // WhatsApp "@lid" nomornya bisa jadi ID internal panjang, bukan nomor HP asli). Keduanya
+  // WAJIB berasal dari pesan MASUK warga yang paling baru, sudah didapat lewat kueri
+  // `latestInboundPerWaJid` (satu baris ter-INBOUND-baru per waJid).
   const contactNameByWaJid = new Map<string, string>();
-
-  // Nomor HP yang DITAMPILKAN juga dilacak terpisah dari "pesan terakhir", dengan alasan
-  // yang sama seperti nama kontak: kalau pesan terakhirnya balasan KITA yang diketik
-  // langsung dari HP ke warga yang JID-nya di-mask WhatsApp ("@lid"), waNumber di baris
-  // itu bisa jadi ID internal WhatsApp yang panjang & bukan nomor HP asli (celah yang sudah
-  // diperbaiki di sisi bot untuk data baru, tapi baris lama yang terlanjur salah masih ada).
-  // Pesan MASUK selalu benar (lewat senderPn) - diutamakan kalau ada, baru fallback ke pesan
-  // terakhir apa pun kalau warga itu belum pernah membalas sama sekali.
   const bestWaNumberByWaJid = new Map<string, string>();
+  for (const m of latestInboundPerWaJid) {
+    if (!m.isGroup && !m.isChannel && m.senderName) contactNameByWaJid.set(m.waJid, m.senderName);
+    bestWaNumberByWaJid.set(m.waJid, m.waNumber);
+  }
 
-  for (const m of recentInbox) {
-    if (!m.isGroup && !m.isChannel && m.direction === "INBOUND" && m.senderName && !contactNameByWaJid.has(m.waJid)) {
-      contactNameByWaJid.set(m.waJid, m.senderName);
-    }
-    if (m.direction === "INBOUND" && !bestWaNumberByWaJid.has(m.waJid)) {
-      bestWaNumberByWaJid.set(m.waJid, m.waNumber);
-    }
-
-    const existing = latestByWaJid.get(m.waJid);
-    if (existing && existing.lastAt >= m.createdAt) continue;
+  for (const m of latestPerWaJid) {
     latestByWaJid.set(m.waJid, {
       waNumber: m.waNumber,
       lastMessage: m.message,

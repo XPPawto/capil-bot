@@ -10,11 +10,14 @@ import { sendTakeoverNotice } from "../notify/sendTakeoverNotice";
 import { sendFileToResident } from "../notify/sendFileToResident";
 import { sendInboxReply } from "../notify/sendInboxReply";
 import { sendInboxFile } from "../notify/sendInboxFile";
+import { fetchAndCacheAvatar } from "../media/avatarFetch";
+import { getPresence, subscribePresenceOnce } from "../wa/presenceTracker";
 import { runBroadcast } from "../notify/broadcast";
-import { logoutSocket, startSocket } from "../wa/socket";
+import { getSocket, logoutSocket, startSocket } from "../wa/socket";
 import { waState } from "../wa/state";
 import {
   getExtraAccountRuntimeStatus,
+  getExtraAccountSocket,
   logoutExtraAccountSocket,
   startExtraAccountSocket,
 } from "../wa/extraAccountManager";
@@ -316,6 +319,44 @@ export function startControlServer(): void {
       logger.error({ err, requestId, fileName }, "Gagal mengirim file dokumen ke warga");
       res.status(502).json({ error: "send_failed" });
     }
+  });
+
+  app.post("/avatar", async (req, res) => {
+    const waJid = String(req.body?.waJid ?? "");
+    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
+    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
+    if (!waJid) {
+      res.status(400).json({ error: "missing_wajid" });
+      return;
+    }
+    try {
+      const result = await fetchAndCacheAvatar(channel, extraAccountId, waJid);
+      res.json(result);
+    } catch (err) {
+      logger.warn({ err, waJid, channel, extraAccountId }, "Gagal mengambil foto profil");
+      res.status(502).json({ error: "fetch_failed" });
+    }
+  });
+
+  app.post("/presence", async (req, res) => {
+    const waJid = String(req.body?.waJid ?? "");
+    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
+    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
+    if (!waJid) {
+      res.status(400).json({ error: "missing_wajid" });
+      return;
+    }
+    const sock = channel === "EXTRA" && extraAccountId ? getExtraAccountSocket(extraAccountId) : getSocket();
+    if (!sock) {
+      res.json({ status: null, lastSeen: null });
+      return;
+    }
+    // Best-effort, tidak ditunggu (await) - biar respons presence yang SUDAH ada di cache
+    // tetap langsung balik cepat, bukan ikut nunggu subscribe (sekali per jid, lihat
+    // subscribePresenceOnce) yang baru terasa hasilnya di panggilan-panggilan berikutnya.
+    subscribePresenceOnce(sock, channel, extraAccountId, waJid).catch(() => undefined);
+    const presence = getPresence(channel, extraAccountId, waJid);
+    res.json(presence ?? { status: null, lastSeen: null });
   });
 
   app.post("/broadcast", (req, res) => {

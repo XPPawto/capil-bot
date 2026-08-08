@@ -29,7 +29,6 @@ import { prisma } from "./index";
 
 const ALGORITHM = "sha256";
 export const GENESIS_HASH = "0".repeat(64);
-const MAX_APPEND_RETRIES = 5;
 
 function getLedgerKey(): Buffer {
   const raw = process.env.AUDIT_LEDGER_KEY;
@@ -44,7 +43,7 @@ function computeHash(prevHash: string, eventType: string, inboxMessageId: number
   return crypto.createHmac(ALGORITHM, getLedgerKey()).update(canonical).digest("hex");
 }
 
-export type LedgerEventType = "MESSAGE_CREATED" | "MESSAGE_EDITED" | "STATUS_CHANGED" | "MESSAGE_DELETED";
+export type LedgerEventType = "MESSAGE_CREATED" | "MESSAGE_EDITED" | "STATUS_CHANGED" | "MESSAGE_DELETED" | "LIVE_LOCATION_UPDATED" | "REACTION_CHANGED";
 
 export interface MessageCreatedPayload {
   waJid: string;
@@ -66,6 +65,9 @@ export interface MessageCreatedPayload {
   createdAt: string;
   latitude?: number | null;
   longitude?: number | null;
+  isForwarded?: boolean;
+  quotedWaMessageId?: string | null;
+  quotedPreview?: string | null;
 }
 
 export interface MessageEditedPayload {
@@ -82,34 +84,58 @@ export interface MessageDeletedPayload {
   deletedAt: string;
 }
 
-/**
- * Tambahkan satu entri ledger baru, dirantai ke entri terakhir yang ada. Retry otomatis kalau
- * ada proses lain (bot ATAU web) menyambung ke ujung rantai yang sama nyaris bersamaan -
- * database menolak salah satunya lewat constraint unique (bukan diam-diam bikin cabang), yang
- * ditolak baca ulang ujung rantai TERBARU lalu coba lagi.
- */
+/** Update posisi live location berikutnya (bukan share baru) - lihat applyLiveLocationUpdate
+ * di apps/bot/src/conversation/messageLog.ts. */
+export interface LiveLocationUpdatedPayload {
+  newMessage: string;
+  latitude: number;
+  longitude: number;
+  updatedAt: string;
+}
+
+/** Reaksi emoji satu pereaksi ke satu pesan berubah (ditambah/diganti/dibatalkan - emoji=""
+ * berarti dibatalkan) - lihat applyMessageReaction di apps/bot/src/conversation/messageLog.ts. */
+export interface ReactionChangedPayload {
+  reactorJid: string;
+  reactorName: string | null;
+  emoji: string;
+  updatedAt: string;
+}
+
+// CATATAN DARI PROSES MENCARI MEKANISME YANG BENAR (dua percobaan sebelumnya GAGAL, sengaja
+// dicatat di sini supaya tidak diulang lagi kalau kode ini disentuh lagi nanti):
+//  1. Optimistic retry (baca, coba simpan, kalau bentrok baca ulang & coba lagi) - TERBUKTI
+//     kehabisan percobaan dan meninggalkan celah PERMANEN saat banyak event datang beruntun.
+//  2. GET_LOCK MySQL (mutual-exclusion lintas proses) - waktu eksekusinya SUDAH benar
+//     terserialisasi (dibuktikan lewat stress test manual), TAPI pembacaan "hash terakhir"
+//     di dalamnya tetap kena snapshot BEKU dari isolasi default MySQL (REPEATABLE READ) -
+//     snapshot itu diambil saat transaksi MULAI, sebelum sekalipun menunggu giliran GET_LOCK,
+//     jadi begitu akhirnya dapat giliran, yang terbaca tetap bukan data yang paling baru.
+//     Mencoba mengubah isolation level ke READ COMMITTED (baik manual maupun lewat opsi
+//     Prisma) TIDAK berpengaruh - diverifikasi lewat SELECT @@transaction_isolation, tetap
+//     REPEATABLE-READ, kemungkinan keterbatasan Prisma 5.22 dengan provider MySQL.
+// Solusi yang BENAR-BENAR terbukti (lewat stress test 25 panggilan bersamaan, 0 gagal):
+// `SELECT ... FOR UPDATE` pada satu baris (AuditLedgerTail) - locking read InnoDB SELALU
+// membaca versi TERBARU yang sudah commit, tidak peduli isolation level/snapshot sama sekali
+// (beda mendasar dari SELECT biasa) - jadi baik mutual-exclusion MAUPUN kesegaran data
+// terjamin sekaligus oleh satu mekanisme yang sama.
 export async function appendLedgerEntry(
   eventType: LedgerEventType,
   inboxMessageId: number,
-  payload: MessageCreatedPayload | MessageEditedPayload | StatusChangedPayload | MessageDeletedPayload
+  payload: MessageCreatedPayload | MessageEditedPayload | StatusChangedPayload | MessageDeletedPayload | LiveLocationUpdatedPayload | ReactionChangedPayload
 ): Promise<void> {
   const payloadJson = JSON.stringify(payload);
-  for (let attempt = 0; attempt < MAX_APPEND_RETRIES; attempt++) {
-    const last = await prisma.auditLedgerEntry.findFirst({ orderBy: { id: "desc" }, select: { hash: true } });
-    const prevHash = last?.hash ?? GENESIS_HASH;
+
+  await prisma.$transaction(async (tx) => {
+    const [{ lastHash }] = await tx.$queryRaw<{ lastHash: string }[]>`SELECT lastHash FROM AuditLedgerTail WHERE id = 1 FOR UPDATE`;
+    const prevHash = lastHash;
     const createdAt = new Date();
     const hash = computeHash(prevHash, eventType, inboxMessageId, payloadJson, createdAt.toISOString());
-    try {
-      await prisma.auditLedgerEntry.create({
-        data: { eventType, inboxMessageId, payload: payloadJson, prevHash, hash, createdAt },
-      });
-      return;
-    } catch (err: unknown) {
-      const isUniqueConflict = (err as { code?: string })?.code === "P2002";
-      if (isUniqueConflict && attempt < MAX_APPEND_RETRIES - 1) continue;
-      throw err;
-    }
-  }
+    await tx.auditLedgerEntry.create({
+      data: { eventType, inboxMessageId, payload: payloadJson, prevHash, hash, createdAt },
+    });
+    await tx.auditLedgerTail.update({ where: { id: 1 }, data: { lastHash: hash } });
+  });
 }
 
 export interface ChainCheckResult {
@@ -150,11 +176,12 @@ export interface LiveStateMismatch {
 
 /**
  * Untuk tiap InboxMessage yang punya jejak di ledger, "putar ulang" seluruh event-nya
- * (CREATED, lalu tiap EDITED berurutan, lalu STATUS_CHANGED terakhir) untuk tahu isi yang
- * SEHARUSNYA ada di baris itu sekarang - lalu dibandingkan ke isi baris InboxMessage yang
- * SESUNGGUHNYA di database. Beda berarti baris itu diubah langsung (SQL manual), tanpa lewat
- * ledger sama sekali - satu-satunya cara mengubah data yang tidak akan terdeteksi rantai hash
- * di atas sendirian (karena ledgernya sendiri tidak disentuh).
+ * (CREATED, lalu tiap EDITED/LIVE_LOCATION_UPDATED berurutan, lalu STATUS_CHANGED &
+ * MESSAGE_DELETED terakhir) untuk tahu isi yang SEHARUSNYA ada di baris itu sekarang - lalu
+ * dibandingkan ke isi baris InboxMessage yang SESUNGGUHNYA di database. Beda berarti baris
+ * itu diubah langsung (SQL manual), tanpa lewat ledger sama sekali - satu-satunya cara
+ * mengubah data yang tidak akan terdeteksi rantai hash di atas sendirian (karena ledgernya
+ * sendiri tidak disentuh).
  */
 export async function crossCheckLiveState(): Promise<{ mismatches: LiveStateMismatch[]; attachmentChecks: { inboxMessageId: number; attachmentPath: string; expectedSha256: string }[] }> {
   const entries = await prisma.auditLedgerEntry.findMany({ orderBy: { id: "asc" } });
@@ -185,6 +212,15 @@ export async function crossCheckLiveState(): Promise<{ mismatches: LiveStateMism
     let expectedAttachmentSha256: string | null = null;
     let expectedAttachmentPath: string | null = null;
     let expectedDeletedAt: string | null = null;
+    let expectedLatitude: number | null = null;
+    let expectedLongitude: number | null = null;
+    let expectedIsForwarded: boolean | undefined;
+    let expectedQuotedWaMessageId: string | null = null;
+    let expectedQuotedPreview: string | null = null;
+    // Reaksi terakhir PER PEREAKSI (bukan satu nilai tunggal seperti field lain) - satu
+    // pesan bisa direaksi banyak orang sekaligus, masing-masing punya "keadaan terakhir"
+    // sendiri-sendiri (emoji="" berarti pereaksi itu sudah membatalkan reaksinya).
+    const expectedReactions = new Map<string, { emoji: string; reactorName: string | null }>();
 
     for (const e of events) {
       const payload = JSON.parse(e.payload);
@@ -192,6 +228,11 @@ export async function crossCheckLiveState(): Promise<{ mismatches: LiveStateMism
         expectedMessage = payload.message;
         expectedAttachmentSha256 = payload.attachmentSha256 ?? null;
         expectedAttachmentPath = payload.attachmentPath ?? null;
+        expectedLatitude = payload.latitude ?? null;
+        expectedLongitude = payload.longitude ?? null;
+        expectedIsForwarded = payload.isForwarded ?? false;
+        expectedQuotedWaMessageId = payload.quotedWaMessageId ?? null;
+        expectedQuotedPreview = payload.quotedPreview ?? null;
       } else if (e.eventType === "MESSAGE_EDITED") {
         expectedMessage = payload.newMessage;
         expectedEditedAt = payload.editedAt;
@@ -199,6 +240,12 @@ export async function crossCheckLiveState(): Promise<{ mismatches: LiveStateMism
         expectedStatus = payload.newStatus;
       } else if (e.eventType === "MESSAGE_DELETED") {
         expectedDeletedAt = payload.deletedAt;
+      } else if (e.eventType === "LIVE_LOCATION_UPDATED") {
+        expectedMessage = payload.newMessage;
+        expectedLatitude = payload.latitude;
+        expectedLongitude = payload.longitude;
+      } else if (e.eventType === "REACTION_CHANGED") {
+        expectedReactions.set(payload.reactorJid, { emoji: payload.emoji, reactorName: payload.reactorName ?? null });
       }
     }
 
@@ -221,6 +268,41 @@ export async function crossCheckLiveState(): Promise<{ mismatches: LiveStateMism
     const actualDeletedAtIso = row.deletedAt ? row.deletedAt.toISOString() : null;
     if (expectedDeletedAt !== null && expectedDeletedAt !== actualDeletedAtIso) {
       mismatches.push({ inboxMessageId, field: "deletedAt", expected: expectedDeletedAt, actual: actualDeletedAtIso });
+    }
+    // Toleransi epsilon kecil, bukan perbandingan float persis bit-demi-bit - IEEE 754 double
+    // seharusnya round-trip persis lewat JSON+MySQL DOUBLE, tapi tetap lebih aman berjaga-jaga
+    // daripada salah lapor "tidak cocok" gara-gara pembulatan yang sebenarnya tidak berarti apa-apa.
+    const EPSILON = 1e-9;
+    if (expectedLatitude != null && (row.latitude == null || Math.abs(expectedLatitude - row.latitude) > EPSILON)) {
+      mismatches.push({ inboxMessageId, field: "latitude", expected: String(expectedLatitude), actual: row.latitude != null ? String(row.latitude) : null });
+    }
+    if (expectedLongitude != null && (row.longitude == null || Math.abs(expectedLongitude - row.longitude) > EPSILON)) {
+      mismatches.push({ inboxMessageId, field: "longitude", expected: String(expectedLongitude), actual: row.longitude != null ? String(row.longitude) : null });
+    }
+    if (expectedIsForwarded !== undefined && expectedIsForwarded !== row.isForwarded) {
+      mismatches.push({ inboxMessageId, field: "isForwarded", expected: String(expectedIsForwarded), actual: String(row.isForwarded) });
+    }
+    if (expectedQuotedWaMessageId !== null && expectedQuotedWaMessageId !== row.quotedWaMessageId) {
+      mismatches.push({ inboxMessageId, field: "quotedWaMessageId", expected: expectedQuotedWaMessageId, actual: row.quotedWaMessageId });
+    }
+    if (expectedQuotedPreview !== null && expectedQuotedPreview !== row.quotedPreview) {
+      mismatches.push({ inboxMessageId, field: "quotedPreview", expected: expectedQuotedPreview, actual: row.quotedPreview });
+    }
+
+    if (expectedReactions.size > 0) {
+      const actualRows = await prisma.messageReaction.findMany({ where: { inboxMessageId } });
+      const actualByReactor = new Map(actualRows.map((r) => [r.reactorJid, r.emoji]));
+      for (const [reactorJid, expected] of expectedReactions) {
+        const actualEmoji = actualByReactor.get(reactorJid) ?? "";
+        if (expected.emoji !== actualEmoji) {
+          mismatches.push({
+            inboxMessageId,
+            field: `reaction:${reactorJid}`,
+            expected: expected.emoji || "(dibatalkan)",
+            actual: actualEmoji || "(dibatalkan)",
+          });
+        }
+      }
     }
   }
 

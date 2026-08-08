@@ -132,6 +132,7 @@ model ExtraAccount {
   updatedAt       DateTime  @updatedAt
 
   inboxMessages InboxMessage[]
+  callLogs      CallLog[]
 }
 
 /// @deprecated Digantikan oleh ExtraAccount (mendukung lebih dari satu akun tambahan).
@@ -350,12 +351,95 @@ model InboxMessage {
   // tetap menyimpan teks terformat lengkap (termasuk link) untuk kompatibilitas mundur.
   latitude           Float?
   longitude          Float?
+  reactions          MessageReaction[]
+  // Pesan yang DITERUSKAN (forward) dari chat lain manapun - lihat extractIsForwarded di
+  // messageHandler.ts. Ditandai UI dengan label "Diteruskan" persis WA.
+  isForwarded        Boolean          @default(false)
+  // "Membalas pesan X" (reply/kutipan) - lihat extractQuotedInfo di messageHandler.ts.
+  // quotedWaMessageId dipakai UI mencocokkan ke pesan yang sama persis kalau kebetulan masih
+  // ada di jendela thread yang sedang dimuat (bisa lompat/scroll ke situ); quotedPreview
+  // sudah diekstrak & disimpan PERMANEN saat pesan ini pertama masuk (ringkasan teks/label
+  // media pesan asli), jadi tetap bisa ditampilkan meski pesan aslinya di luar jendela yang
+  // sedang dimuat atau (secara teori) sudah tidak ada lagi di database.
+  quotedWaMessageId  String?
+  quotedPreview      String?
 
   @@index([waJid])
   @@index([channel])
   @@index([extraAccountId])
   @@index([waMessageId])
   @@index([createdAt])
+}
+
+/// Reaksi emoji (👍❤️😂 dst) ke satu pesan - satu baris per (pesan, pereaksi), APPEND/UPDATE
+/// di tempat (bukan baris baru tiap kali) supaya kalau orang yang sama ganti reaksi atau
+/// membatalkannya, riwayat "siapa reaksi apa sekarang" tetap rapi satu baris per orang -
+/// sama seperti bagaimana WhatsApp sendiri memperlakukannya. emoji="" berarti reaksi itu
+/// SUDAH DIBATALKAN pengirimnya (WhatsApp mengirim reactionMessage dengan text kosong untuk
+/// ini) - baris tetap disimpan (bukan dihapus) supaya jejaknya ada di ledger, UI cukup
+/// menyembunyikan baris dengan emoji kosong dari tampilan.
+model MessageReaction {
+  id             Int          @id @default(autoincrement())
+  inboxMessageId Int
+  inboxMessage   InboxMessage @relation(fields: [inboxMessageId], references: [id])
+  // JID pereaksi (nomor asli kalau grup/pihak lain), atau "self" kalau kita/petugas sendiri
+  // yang reaksi dari HP - "self" dipakai apa adanya (bukan JID akun sendiri) supaya tidak
+  // perlu resolusi JID tambahan, cukup untuk keperluan tampilan siapa yang reaksi.
+  reactorJid     String
+  reactorName    String?
+  emoji          String
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([inboxMessageId, reactorJid])
+  @@index([inboxMessageId])
+}
+
+/// Riwayat panggilan (suara/video) - dicatat TERPISAH dari InboxMessage (yang juga tetap
+/// dapat baris "[Panggilan ... - hasilnya]" apa adanya supaya tetap kelihatan inline di
+/// thread persis seperti WA) supaya bisa punya tab "Riwayat Panggilan" tersendiri di
+/// /admin-xpawto tanpa harus menyaring teks InboxMessage dengan awalan string - query
+/// langsung ke tabel terstruktur ini jauh lebih murah & tidak rapuh.
+model CallLog {
+  id             Int          @id @default(autoincrement())
+  waJid          String
+  waNumber       String
+  channel        InboxChannel
+  extraAccountId Int?
+  extraAccount   ExtraAccount? @relation(fields: [extraAccountId], references: [id])
+  isVideo        Boolean
+  isGroup        Boolean      @default(false)
+  groupName      String?
+  /// "diangkat" | "ditolak" | "tidak dijawab" | "ditolak otomatis" (nomor layanan) - lihat
+  /// conversation/callHandler.ts & extraAccountCallHandler.ts.
+  outcome        String
+  createdAt      DateTime     @default(now())
+
+  @@index([channel, extraAccountId, createdAt])
+  @@index([waJid])
+}
+
+/// Cache foto profil WA per kontak. Baileys tidak pernah MENGIRIMKAN foto profil lewat
+/// event pesan biasa - harus diminta eksplisit lewat `sock.profilePictureUrl(jid)`, dan itu
+/// memanggil server WhatsApp per kontak, jadi WAJIB di-cache (memanggil terlalu sering per
+/// buka halaman berisiko dianggap pola pemakaian otomatis yang mencurigakan, sama seperti
+/// kekhawatiran broadcast massal yang sudah didokumentasikan di README/plan proyek ini).
+/// `extraAccountId` sengaja Int NOT NULL dengan sentinel 0 (bukan nullable) - MySQL
+/// menganggap NULL tidak pernah sama dengan NULL lain di dalam unique index gabungan,
+/// jadi kalau dibiarkan nullable, channel SERVICE (yang selalu tanpa akun ekstra) bisa
+/// kebobolan baris dobel per waJid alih-alih benar-benar unik.
+model ContactAvatar {
+  id             Int          @id @default(autoincrement())
+  waJid          String
+  channel        InboxChannel
+  extraAccountId Int          @default(0)
+  /// null = sudah dicek ke WA dan TIDAK ada foto profil (atau tidak diizinkan lihat) -
+  /// baris tetap disimpan supaya tidak nanya ulang ke WA terus-menerus tiap dibuka.
+  imagePath      String?
+  mimeType       String?
+  fetchedAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([waJid, channel, extraAccountId])
 }
 
 /// Buku besar audit terenkripsi HMAC, berantai (setiap baris mengunci baris sebelumnya lewat
@@ -365,11 +449,12 @@ model InboxMessage {
 /// untuk mekanisme lengkap & keterbatasannya, dan lib/accessControl.ts (web) untuk pola
 /// HMAC/AES serupa yang sudah dipakai di proyek ini.
 ///
-/// prevHash & hash SENGAJA @unique - ini yang membuat rantai aman ditulis dari DUA PROSES
-/// terpisah sekaligus (bot & web sama-sama bisa membuat InboxMessage baru) tanpa risiko
-/// bercabang: kalau dua proses sama-sama mencoba menyambung ke ujung rantai yang sama
-/// bersamaan, constraint unique di database menolak salah satunya (bukan diam-diam membuat
-/// dua cabang) - yang ditolak otomatis mencoba lagi ke ujung rantai yang sudah ter-update.
+/// prevHash & hash SENGAJA @unique - lapisan jaga-jaga TERAKHIR supaya rantai tidak pernah
+/// bisa bercabang biar bagaimanapun (kalau isi baris ganda persis, MySQL sendiri yang
+/// menolaknya). Mutual-exclusion yang SESUNGGUHNYA (yang membuat dua proses - bot & web,
+/// sama-sama bisa membuat InboxMessage baru - aman menulis ke rantai yang sama bersamaan)
+/// dipegang row lock `SELECT ... FOR UPDATE` di AuditLedgerTail, lihat model itu dan
+/// appendLedgerEntry di packages/db/src/auditLedger.ts.
 model AuditLedgerEntry {
   id             Int      @id @default(autoincrement())
   eventType      String
@@ -380,6 +465,36 @@ model AuditLedgerEntry {
   createdAt      DateTime @default(now())
 
   @@index([inboxMessageId])
+}
+
+/// Singleton (id selalu 1) - cuma menyimpan hash entri TERAKHIR AuditLedgerEntry. Dikunci
+/// lewat `SELECT ... FOR UPDATE` di appendLedgerEntry - INI (bukan GET_LOCK ataupun
+/// isolation level Prisma, dua-duanya sempat dicoba dan sama-sama TERBUKTI GAGAL lewat
+/// stress test konkuren nyata) yang benar-benar menjaga penyambungan rantai aman ditulis dari
+/// banyak proses/koneksi sekaligus. Row lock InnoDB WAJIB membaca versi TERBARU yang sudah
+/// commit (beda dari SELECT biasa yang kena snapshot beku di bawah REPEATABLE READ, isolasi
+/// default MySQL - persis inilah sebab GET_LOCK saja dulu masih bisa bentrok: urutan
+/// eksekusinya sudah benar terserialisasi, tapi pembacaannya tetap basi).
+model AuditLedgerTail {
+  id       Int    @id @default(1)
+  lastHash String
+}
+
+/// Sakelar gembok utama /admin-xpawto ("Time-Based Kill Switch"). Singleton (id selalu 1).
+/// Defaultnya SELALU terkunci (unlockedUntil null, atau sudah lewat) - PIN+TOTP yang benar
+/// sekalipun TETAP ditolak selama terkunci (lihat requireVerifiedAdmin & verify-pin/route.ts
+/// di apps/web). Satu-satunya cara membuka: kirim "/unlock <durasi>" ke bot Telegram, dari
+/// CHAT ID PEMILIK YANG SUDAH DIKONFIGURASI SAJA (TELEGRAM_NOTIFY_CHAT_ID) - lihat
+/// apps/bot/src/notify/telegramCommands.ts, bukan siapa pun yang kebetulan tahu bot-nya.
+/// Otomatis terkunci lagi begitu unlockedUntil lewat - dibandingkan ke waktu sekarang tiap
+/// kali dicek (self-expiring), SENGAJA tanpa job terjadwal yang "mengunci ulang" supaya
+/// tidak ada risiko job itu gagal/lupa jalan lalu gembok kelupaan terbuka. Jalur break-glass
+/// manual (tanpa Telegram sama sekali, kalau bot down/token hilang) ada di
+/// packages/db/scripts/setMasterLock.ts, wajib dijalankan langsung di server.
+model AdminLockState {
+  id            Int       @id @default(1)
+  unlockedUntil DateTime?
+  updatedAt     DateTime  @updatedAt
 }
 
 /// Catatan monitoring: input warga/pengunjung yang polanya menyerupai percobaan SQL

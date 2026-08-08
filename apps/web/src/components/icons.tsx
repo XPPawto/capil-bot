@@ -215,3 +215,47 @@ export function IconCheckAll({ className = "h-4 w-4" }: IconProps) {
     </svg>
   );
 }
+
+export function IconForward({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M13.5 8L18.5 12L13.5 16" />
+      <path d="M18.5 12H8.5C6 12 5.5 10 5.5 8.5" />
+    </svg>
+  );
+}
+
+export function IconPhone({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M5.5 4h3l1.5 4-2 1.5a11 11 0 0 0 5 5l1.5-2 4 1.5v3a1.5 1.5 0 0 1-1.6 1.5A16.5 16.5 0 0 1 4 5.6 1.5 1.5 0 0 1 5.5 4Z" />
+    </svg>
+  );
+}
+
+export function IconVideoCall({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect x="3.5" y="6.5" width="11" height="11" rx="1.75" />
+      <path d="M14.5 10.5l5.5-3v9l-5.5-3Z" />
+    </svg>
+  );
+}
+
+// Panah diagonal - masuk (dari kiri-bawah ke kanan-atas, hijau via warna pemanggil) untuk
+// panggilan diangkat, keluar-terbalik/menunjuk ke bawah (merah) untuk ditolak/tidak diangkat.
+export function IconCallIn({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M7 7l10 10M17 9V17H9" />
+    </svg>
+  );
+}
+
+export function IconCallMissed({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M17 7L7 17M7 9V17H15" />
+    </svg>
+  );
+}

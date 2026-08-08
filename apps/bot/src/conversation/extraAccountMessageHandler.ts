@@ -1,25 +1,53 @@
+import { WAMessageStubType } from "@whiskeysockets/baileys";
 import type { WAMessage, WASocket } from "@whiskeysockets/baileys";
 import { logger } from "../logger";
 import { checkRateLimit } from "./rateLimit";
-import { logInboxMessage, logOutboundFromDevice, type GroupMeta } from "./messageLog";
+import { logInboxMessage, logOutboundFromDevice, logInboxCallEvent, type GroupMeta } from "./messageLog";
 import { logInboxMediaIfPresent, logViewOnceUnavailableNote, VIEW_ONCE_UNAVAILABLE_NOTE } from "../media/inboxMedia";
 import {
   extractInboxText,
+  extractIsForwarded,
   extractLocationCoords,
   extractParticipantNumber,
+  extractQuotedInfo,
+  extractReaction,
   extractWaNumber,
   handleMessageDeleteIfPresent,
   handleMessageEditIfPresent,
+  handleReactionIfPresent,
   resolveWaNumberForOutbound,
 } from "./messageHandler";
 import { getGroupName } from "../wa/groupNameCache";
 import { getChannelName } from "../wa/channelNameCache";
 import { wasSentByDashboard } from "../wa/sentMessageTracker";
-import { forwardTelegramChatActivity, notifyTelegramChatEvent } from "../notify/telegramNotify";
+import { forwardTelegramChatActivity, notifyTelegramChatEvent, notifyTelegramReaction } from "../notify/telegramNotify";
 
 interface MessagesUpsertPayload {
   messages: WAMessage[];
   type: string;
+}
+
+/**
+ * PENTING (bug "panggilan tidak dijawab - baik keluar maupun masuk - tidak tercatat sama
+ * sekali", ditemukan lewat pengujian nyata setelah fix event 'call' sebelumnya TERNYATA
+ * belum cukup): panggilan yang dibiarkan berdering sampai habis TIDAK SELALU memicu event
+ * 'call' berstatus final yang bisa ditangkap extraAccountCallHandler.ts. Baileys punya jalur
+ * KEDUA yang terpisah total: begitu status 'timeout' terdeteksi, Baileys SENDIRI menyuntikkan
+ * "pesan" sintetis (messageStubType CALL_MISSED_VOICE/VIDEO, `message: { call: {...} } }`)
+ * ke jalur messages.upsert BIASA - persis pesan sungguhan, cuma isinya bukan teks/media,
+ * lihat node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js (event 'call' bawaan
+ * Baileys sendiri, event listener internal, bukan yang kita daftarkan). Karena tidak ada
+ * satu pun kode di proyek ini yang sebelumnya memeriksa `messageStubType`, pesan sintetis ini
+ * lolos begitu saja lewat pipa pesan biasa tanpa pernah dikenali sebagai panggilan - makanya
+ * "tidak dijawab" hilang tanpa jejak sekalipun fix status 'terminate' sebelumnya sudah benar
+ * untuk kasus yang MEMANG lewat event 'call'.
+ */
+function missedCallInfoFromStub(stubType: number | null | undefined): { isVideo: boolean; isGroup: boolean } | null {
+  if (stubType === WAMessageStubType.CALL_MISSED_VOICE) return { isVideo: false, isGroup: false };
+  if (stubType === WAMessageStubType.CALL_MISSED_VIDEO) return { isVideo: true, isGroup: false };
+  if (stubType === WAMessageStubType.CALL_MISSED_GROUP_VOICE) return { isVideo: false, isGroup: true };
+  if (stubType === WAMessageStubType.CALL_MISSED_GROUP_VIDEO) return { isVideo: true, isGroup: true };
+  return null;
 }
 
 /**
@@ -116,13 +144,67 @@ export async function handleExtraAccountIncomingMessages(
       continue;
     }
 
+    // Panggilan tidak dijawab (lihat missedCallInfoFromStub di atas) - jalur TERPISAH dari
+    // event 'call' biasa yang ditangani extraAccountCallHandler.ts, wajib diperiksa DI SINI
+    // juga supaya tidak hilang tanpa jejak. `jid` (msg.key.remoteJid) di sini SUDAH benar
+    // identitas percakapannya untuk kedua arah - Baileys sendiri yang mengisinya dari
+    // call.chatId saat menyusun pesan sintetis ini (lihat komentar di atas).
+    const missedCall = missedCallInfoFromStub(msg.messageStubType);
+    if (missedCall) {
+      try {
+        const groupName = missedCall.isGroup ? await getGroupName(sock, jid) : undefined;
+        await logInboxCallEvent(
+          jid,
+          jid.split("@")[0],
+          missedCall.isVideo,
+          "tidak dijawab",
+          "EXTRA",
+          accountId,
+          missedCall.isGroup ? { isGroup: true, groupName: groupName ?? jid } : undefined
+        );
+        logger.info({ jid, accountId, missedCall }, "Panggilan tidak dijawab tercatat (jalur pesan sintetis)");
+      } catch (err) {
+        logger.warn({ err, jid, accountId }, "Gagal mencatat panggilan tidak dijawab (jalur pesan sintetis)");
+      }
+      continue;
+    }
+
     if (!msg.message) continue;
 
     if (await handleMessageEditIfPresent(msg, jid, "EXTRA", accountId)) continue;
     if (await handleMessageDeleteIfPresent(msg, jid, "EXTRA", accountId)) continue;
 
-    // Selain edit/hapus (ditangani di atas), sisa alur di bawah ini HANYA untuk payload "notify"
-    // (pesan baru sungguhan) - "append" bisa berisi event lain yang bukan pesan baru.
+    // Reaksi emoji ditangani terpisah dari edit/hapus (bukan protocolMessage, jalur sinyal
+    // sendiri) SUPAYA notifikasi Telegramnya bisa langsung disertakan di sini - beda dari
+    // edit/hapus yang belum diteruskan ke Telegram sama sekali.
+    const reactionInfo = extractReaction(msg);
+    if (reactionInfo) {
+      const result = await handleReactionIfPresent(msg, jid, "EXTRA", accountId);
+
+      const isGroupChat = jid.endsWith("@g.us");
+      const reactorName = msg.key.fromMe ? "Anda" : (msg.pushName ?? extractParticipantNumber(msg) ?? jid.split("@")[0]);
+      const waNumber = isGroupChat
+        ? jid.split("@")[0]
+        : msg.key.fromMe
+          ? await resolveWaNumberForOutbound(sock, jid)
+          : extractWaNumber(msg, jid);
+      // `attached` disertakan supaya notifikasi Telegram tidak menyesatkan kalau reaksinya
+      // TIDAK berhasil ditempelkan (pesan aslinya tidak ada di Pesan Masuk, mis. gagal
+      // decrypt saat pertama masuk) - tanpa ini, Telegram bisa bilang "berhasil" padahal
+      // di /admin-xpawto tidak muncul apa-apa, membingungkan.
+      notifyTelegramReaction(accountId, {
+        waNumber,
+        reactorName,
+        emoji: reactionInfo.emoji,
+        isGroup: isGroupChat,
+        groupName: isGroupChat ? await getGroupName(sock, jid) : undefined,
+        attached: result.applied,
+      }).catch((err) => logger.warn({ err, jid, accountId }, "Gagal mengirim notifikasi Telegram untuk reaksi"));
+      continue;
+    }
+
+    // Selain edit/hapus/reaksi (ditangani di atas), sisa alur di bawah ini HANYA untuk payload
+    // "notify" (pesan baru sungguhan) - "append" bisa berisi event lain yang bukan pesan baru.
     if (payload.type !== "notify") continue;
 
     const isFromMe = Boolean(msg.key.fromMe);
@@ -181,10 +263,12 @@ export async function handleExtraAccountIncomingMessages(
     try {
       if (text) {
         const coords = extractLocationCoords(msg);
+        const isForwarded = extractIsForwarded(msg);
+        const quoted = extractQuotedInfo(msg);
         if (isFromMe) {
-          await logOutboundFromDevice(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined, coords);
+          await logOutboundFromDevice(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined, coords, isForwarded, quoted);
         } else {
-          await logInboxMessage(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined, coords);
+          await logInboxMessage(jid, waNumber, text, "EXTRA", group, accountId, msg.key.id ?? undefined, coords, isForwarded, quoted);
         }
       }
       await logInboxMediaIfPresent(sock, msg, jid, waNumber, "EXTRA", group, direction, accountId);

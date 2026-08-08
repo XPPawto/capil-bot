@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isMasterUnlocked } from "@kelurahan/db";
 import { requireAdmin } from "@/lib/apiGuard";
 import { verifyAdminXpawtoPin, verifyAdminXpawtoTotp } from "@/lib/accessControl";
 import { setPinCookie } from "@/lib/adminXpawtoPin";
@@ -9,10 +10,20 @@ import { logSuspiciousFields } from "@/lib/securityLog";
  * sini SENDIRI belum lolos di titik ini, jadi tidak bisa pakai requireVerifiedAdmin yang
  * justru mensyaratkan itu, telur-ayam). Dua syarat berurutan: PIN dulu, baru TOTP - keduanya
  * WAJIB benar sebelum cookie "lolos" diset.
+ *
+ * Gerbang gembok master dicek DULUAN, sebelum PIN/TOTP diperiksa sama sekali - kalau
+ * terkunci, PIN/TOTP yang benar sekalipun tidak ada gunanya (lihat komentar model
+ * AdminLockState di schema.prisma), jadi tidak perlu buang waktu memverifikasi keduanya atau
+ * ikut menghitung sebagai percobaan gagal.
  */
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
+
+  const { unlocked } = await isMasterUnlocked();
+  if (!unlocked) {
+    return NextResponse.json({ error: "locked" }, { status: 423 });
+  }
 
   const body = await req.json().catch(() => ({}));
   const pin = typeof body?.pin === "string" ? body.pin : "";

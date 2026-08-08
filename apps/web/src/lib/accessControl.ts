@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
-import { prisma } from "@kelurahan/db";
+import { prisma, isMasterUnlocked } from "@kelurahan/db";
 import type { Admin } from "@kelurahan/db";
 import { getCurrentAdmin } from "./session";
 import { verifyTotpCode } from "./totp";
@@ -65,8 +65,20 @@ type Guard = { admin: Admin } | { error: NextResponse };
  * /api/inbox/* - menambahkan syarat "sudah lolos PIN+TOTP" (cookie yang sama dipakai
  * halamannya) SEBELUM memproses apa pun, supaya endpoint JSON-nya tidak bisa dipanggil
  * langsung cuma bermodal sesi admin biasa, melewati gerbang PIN+TOTP di halamannya.
+ *
+ * Gerbang gembok master (@kelurahan/db -> masterLock.ts) dicek PALING AWAL, sebelum apa pun
+ * yang lain - ini yang membuatnya benar-benar "kill switch": begitu gembok tertutup (baik
+ * karena waktunya habis, ATAU dikunci manual lewat /lock), SEMUA panggilan /api/inbox/*
+ * langsung ditolak lewat status 423, TERMASUK dari sesi yang PIN+TOTP-nya sudah lolos dan
+ * sedang aktif dipakai - bukan cuma menghalangi login BARU. 423 (bukan 401/404 seperti dua
+ * gerbang di bawah) supaya klien (InboxClient.tsx) bisa membedakannya dan memuat ulang
+ * halaman ke layar "Terkunci", bukan diam-diam gagal seperti kegagalan jaringan biasa.
  */
 export async function requireVerifiedAdmin(): Promise<Guard> {
+  const { unlocked } = await isMasterUnlocked();
+  if (!unlocked) {
+    return { error: NextResponse.json({ error: "locked" }, { status: 423 }) };
+  }
   const admin = await getCurrentAdmin();
   if (!admin) {
     return { error: NextResponse.json({ error: "unauthorized" }, { status: 401 }) };

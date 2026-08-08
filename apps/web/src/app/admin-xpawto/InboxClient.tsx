@@ -4,17 +4,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relativeDuration } from "@/lib/format";
 import {
   IconArrowLeft,
+  IconCallIn,
+  IconCallMissed,
   IconChat,
   IconCheck,
   IconCheckAll,
   IconClose,
   IconDocument,
+  IconForward,
   IconMegaphone,
   IconPaperclip,
+  IconPhone,
   IconSearch,
   IconSend,
   IconShield,
   IconUsers,
+  IconVideoCall,
   IconViewOnce,
 } from "@/components/icons";
 
@@ -38,6 +43,7 @@ interface Conversation {
 
 interface MessageItem {
   id: string;
+  waMessageId: string | null;
   direction: "OUTBOUND" | "INBOUND";
   message: string;
   createdAt: string;
@@ -51,6 +57,31 @@ interface MessageItem {
   deletedAt: string | null;
   latitude: number | null;
   longitude: number | null;
+  reactions: { reactorJid: string; reactorName: string | null; emoji: string }[];
+  isForwarded: boolean;
+  quotedWaMessageId: string | null;
+  quotedPreview: string | null;
+}
+
+interface CallLogItem {
+  id: number;
+  waJid: string;
+  waNumber: string;
+  isVideo: boolean;
+  isGroup: boolean;
+  groupName: string | null;
+  outcome: string;
+  createdAt: string;
+  contactName: string | null;
+}
+
+interface MediaItem {
+  id: string;
+  attachmentUrl: string;
+  attachmentMimeType: string | null;
+  caption: string;
+  createdAt: string;
+  direction: "OUTBOUND" | "INBOUND";
 }
 
 interface ExtraAccountSummary {
@@ -160,6 +191,87 @@ function initialsOf(waNumber: string): string {
   return waNumber.slice(-2);
 }
 
+// Sakelar gembok master (lihat komentar model AdminLockState di schema.prisma) bisa
+// menutup diri KAPAN SAJA, termasuk sementara admin sedang aktif memakai halaman ini -
+// requireVerifiedAdmin di server membalas 423 (bukan 401/404 seperti gerbang lain) supaya
+// dibedakan dari kegagalan jaringan biasa. Begitu ketemu, muat ulang halaman penuh (bukan
+// cuma set state) - page.tsx Server Component yang akan menampilkan layar "Terkunci" yang
+// sebenarnya, satu sumber kebenaran, bukan ditiru state client di sini.
+function reloadIfLocked(res: Response): boolean {
+  if (res.status === 423) {
+    window.location.reload();
+    return true;
+  }
+  return false;
+}
+
+/** Label status online/"sedang mengetik..." persis WA - null kalau tidak ada info berarti
+ * untuk ditampilkan (status "unavailable"/"paused" tanpa lastSeen sama sekali, mis. kontak
+ * menyembunyikan info ini lewat pengaturan privasinya). */
+function formatPresenceLabel(presence: { status: string | null; lastSeen: number | null } | null): string | null {
+  if (!presence?.status) return null;
+  if (presence.status === "composing") return "sedang mengetik...";
+  if (presence.status === "recording") return "sedang merekam suara...";
+  if (presence.status === "available") return "online";
+  if (presence.lastSeen) return `terakhir dilihat ${relativeDuration(new Date(presence.lastSeen * 1000).toISOString())}`;
+  return null;
+}
+
+/**
+ * Foto profil/ikon grup, dengan fallback ke lingkaran inisial/ikon kalau memang tidak ada
+ * foto ATAU gambarnya gagal dimuat (waJid belum pernah diminta, bot lagi offline, dst) -
+ * lihat api/inbox/avatar/[waJid]/route.ts untuk mekanisme cache-di-belakangnya. `key` di
+ * pemanggil WAJIB menyertakan waJid supaya state `failed` di sini tidak "nyangkut" dari
+ * baris kontak lain saat React mendaur ulang komponen (list re-render tiap poll).
+ */
+function Avatar({
+  waJid,
+  waNumber,
+  isGroup,
+  isChannel,
+  channel,
+  extraAccountId,
+  active,
+  sizeClass,
+  iconClass,
+}: {
+  waJid: string;
+  waNumber: string;
+  isGroup: boolean;
+  isChannel: boolean;
+  channel: Channel;
+  extraAccountId: number | undefined;
+  active?: boolean;
+  sizeClass: string;
+  iconClass: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = `/api/inbox/avatar/${encodeURIComponent(waJid)}?channel=${channel}${
+    extraAccountId ? `&extraAccountId=${extraAccountId}` : ""
+  }`;
+
+  return (
+    <span
+      className={`relative flex shrink-0 items-center justify-center overflow-hidden rounded-full text-sm font-semibold ${sizeClass} ${
+        active ? "bg-surface text-pastel-blue-ink" : "bg-canvas text-ink-muted"
+      }`}
+    >
+      {!failed && (
+        // eslint-disable-next-line @next/next/no-img-element -- gambar dinamis milik server sendiri, bukan aset build.
+        <img src={src} alt="" onError={() => setFailed(true)} className="absolute inset-0 h-full w-full object-cover" />
+      )}
+      {failed &&
+        (isChannel ? (
+          <IconMegaphone className={iconClass} />
+        ) : isGroup ? (
+          <IconUsers className={iconClass} />
+        ) : (
+          initialsOf(waNumber)
+        ))}
+    </span>
+  );
+}
+
 function formatPhone(waNumber: string): string {
   // Tampilkan sedikit lebih enak dibaca: 6281234567890 -> +62 812-3456-7890 (best-effort,
   // tidak mengubah data asli, cuma tampilan).
@@ -195,6 +307,11 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
   const [extraAccounts, setExtraAccounts] = useState<ExtraAccountSummary[]>([]);
   const [conversations, setConversations] = useState(initialConversations);
   const [query, setQuery] = useState("");
+  // Tab "Percakapan" vs "Panggilan" (mirip WA) - independen dari accountKey, jadi tetap
+  // menghormati akun mana yang sedang aktif dipilih di atasnya.
+  const [mainView, setMainView] = useState<"chats" | "calls">("chats");
+  const [calls, setCalls] = useState<CallLogItem[]>([]);
+  const [callsLoading, setCallsLoading] = useState(false);
   const [selectedWaJid, setSelectedWaJid] = useState<string | null>(initialConversations[0]?.waJid ?? null);
   const [showThreadOnMobile, setShowThreadOnMobile] = useState(false);
 
@@ -218,6 +335,17 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
   const [forceReconnectScreen, setForceReconnectScreen] = useState(false);
   // Lihat foto/stiker langsung di halaman (lightbox) - tidak lagi membuka tab baru.
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  // Kilas terang sesaat pada bubble tujuan saat pratinjau kutipan balasan diklik (lihat
+  // scrollToQuoted di bawah) - murni penanda visual "ini pesan yang dimaksud", bukan state
+  // yang berarti apa pun secara data.
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+  // Panel galeri media (tombol "Media" di header thread).
+  const [showMediaGallery, setShowMediaGallery] = useState(false);
+  const [mediaItems, setMediaItems] = useState<MediaItem[] | null>(null);
+  const [mediaLoading, setMediaLoading] = useState(false);
+  // Status online/"sedang mengetik..." kontak yang sedang dibuka (chat 1:1 saja - lihat
+  // komentar wa/presenceTracker.ts di sisi bot soal grup belum didukung).
+  const [presence, setPresence] = useState<{ status: string | null; lastSeen: number | null } | null>(null);
 
   // ---- badge "Terverifikasi" - bukti keaslian riwayat chat (lihat LedgerBadge) ----
   const [ledgerReport, setLedgerReport] = useState<LedgerReport | null>(null);
@@ -355,6 +483,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
   const pollUnreadCounts = useCallback(async () => {
     try {
       const res = await fetch("/api/inbox/unread-counts", { cache: "no-store" });
+      if (reloadIfLocked(res)) return;
       if (!res.ok) return;
       const data: UnreadCounts = await res.json();
       setUnreadCounts(data);
@@ -376,6 +505,7 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
       url.searchParams.set("channel", ch);
       if (id) url.searchParams.set("extraAccountId", String(id));
       const res = await fetch(url, { cache: "no-store" });
+      if (reloadIfLocked(res)) return;
       if (!res.ok) return;
       const data: { conversations: Conversation[] } = await res.json();
       setConversations(data.conversations);
@@ -403,6 +533,30 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
     const interval = setInterval(() => pollList(channel, extraAccountId), LIST_POLL_MS);
     return () => clearInterval(interval);
   }, [pollList, channel, extraAccountId, ready]);
+
+  // ---- poll riwayat panggilan (tab "Panggilan", akun-aware sama seperti daftar percakapan) ----
+  const pollCalls = useCallback(async (ch: Channel, id: number | undefined) => {
+    try {
+      const url = new URL("/api/inbox/calls", window.location.origin);
+      url.searchParams.set("channel", ch);
+      if (id) url.searchParams.set("extraAccountId", String(id));
+      const res = await fetch(url, { cache: "no-store" });
+      if (reloadIfLocked(res)) return;
+      if (!res.ok) return;
+      const data: { calls: CallLogItem[] } = await res.json();
+      setCalls(data.calls);
+    } catch {
+      // koneksi gagal sesaat, dicoba lagi di siklus berikutnya
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!ready || mainView !== "calls") return;
+    setCallsLoading(true);
+    pollCalls(channel, extraAccountId).finally(() => setCallsLoading(false));
+    const interval = setInterval(() => pollCalls(channel, extraAccountId), LIST_POLL_MS);
+    return () => clearInterval(interval);
+  }, [pollCalls, channel, extraAccountId, ready, mainView]);
 
   // ---- status koneksi akun ekstra yang sedang dipilih (cuma dipoll selagi belum tersambung) ----
   const fetchExtraStatus = useCallback(async (id: number) => {
@@ -450,6 +604,39 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
     }
   }, []);
 
+  // ---- galeri media (tombol "Media" di header thread) - dimuat sekali saat panelnya
+  // dibuka, bukan dipoll berkala seperti thread pesan (galeri bukan sesuatu yang admin
+  // pelototi terus-menerus, cukup segar saat dibuka). ----
+  async function openMediaGallery() {
+    if (!selected) return;
+    setShowMediaGallery(true);
+    setMediaLoading(true);
+    setMediaItems(null);
+    try {
+      const url = new URL(`/api/inbox/${encodeURIComponent(selected.waJid)}/media`, window.location.origin);
+      url.searchParams.set("channel", channel);
+      if (extraAccountId) url.searchParams.set("extraAccountId", String(extraAccountId));
+      const res = await fetch(url, { cache: "no-store" });
+      if (reloadIfLocked(res)) return;
+      const data: { media: MediaItem[] } = await res.json();
+      setMediaItems(data.media ?? []);
+    } catch {
+      setMediaItems([]);
+    } finally {
+      setMediaLoading(false);
+    }
+  }
+
+  /** Kutipan balasan diklik - lompat & sorot pesan aslinya kalau kebetulan masih ada di
+   * jendela thread yang sedang dimuat (lihat komentar quotedWaMessageId di schema.prisma). */
+  function scrollToQuoted(waMessageId: string) {
+    const target = messages.find((m) => m.waMessageId === waMessageId);
+    if (!target) return;
+    document.getElementById(`msg-${target.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedMsgId(target.id);
+    setTimeout(() => setHighlightedMsgId((cur) => (cur === target.id ? null : cur)), 1500);
+  }
+
   useEffect(() => {
     if (!selectedWaJid) return;
     let cancelled = false;
@@ -481,6 +668,35 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
       clearInterval(interval);
     };
   }, [selectedWaJid, channel, extraAccountId, pollThread]);
+
+  // ---- status online/"sedang mengetik..." percakapan yang sedang dibuka ----
+  useEffect(() => {
+    setPresence(null);
+    // Grup/channel tidak didukung (lihat wa/presenceTracker.ts) - tidak perlu poll sama sekali.
+    if (!selectedWaJid || selected?.isGroup || selected?.isChannel) return;
+    let cancelled = false;
+    async function pollPresence() {
+      try {
+        const url = new URL("/api/inbox/presence", window.location.origin);
+        url.searchParams.set("waJid", selectedWaJid!);
+        url.searchParams.set("channel", channel);
+        if (extraAccountId) url.searchParams.set("extraAccountId", String(extraAccountId));
+        const res = await fetch(url, { cache: "no-store" });
+        if (reloadIfLocked(res)) return;
+        if (!res.ok || cancelled) return;
+        setPresence(await res.json());
+      } catch {
+        // koneksi gagal sesaat, dicoba lagi di siklus berikutnya
+      }
+    }
+    pollPresence();
+    const interval = setInterval(pollPresence, THREAD_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `selected` sengaja tidak diikutkan penuh, cukup isGroup/isChannel-nya yang relevan di sini
+  }, [selectedWaJid, channel, extraAccountId, selected?.isGroup, selected?.isChannel]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -771,7 +987,33 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
               +
             </button>
           </div>
-          {ready && <p className="mt-2 text-[11px] text-ink-muted">{conversations.length} percakapan</p>}
+          {ready && (
+            <div className="mt-2.5 flex items-center gap-1 rounded-lg border border-line bg-canvas p-1">
+              <button
+                type="button"
+                onClick={() => setMainView("chats")}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium transition-all active:scale-95 ${
+                  mainView === "chats" ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
+                }`}
+              >
+                <IconChat className="h-3.5 w-3.5" />
+                Percakapan
+              </button>
+              <button
+                type="button"
+                onClick={() => setMainView("calls")}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium transition-all active:scale-95 ${
+                  mainView === "calls" ? "bg-ink text-canvas" : "text-ink-muted hover:bg-surface-hover"
+                }`}
+              >
+                <IconPhone className="h-3.5 w-3.5" />
+                Panggilan
+              </button>
+            </div>
+          )}
+          {ready && mainView === "chats" && (
+            <p className="mt-2 text-[11px] text-ink-muted">{conversations.length} percakapan</p>
+          )}
           {isDisconnected && !addingAccount && (
             <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-pastel-yellow px-2.5 py-1.5">
               <p className="text-[10.5px] text-pastel-yellow-ink">
@@ -829,6 +1071,74 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
           <div className="flex flex-1 items-center justify-center px-6 py-10">
             <p className="text-sm text-ink-muted">Belum tersambung.</p>
           </div>
+        ) : mainView === "calls" ? (
+          <div className="flex-1 overflow-y-auto">
+            {callsLoading && calls.length === 0 && (
+              <div className="flex flex-col items-center gap-2 px-6 py-16 text-center">
+                <IconPhone className="h-8 w-8 animate-pulse text-ink-faint" />
+                <p className="text-sm text-ink-muted">Memuat riwayat panggilan...</p>
+              </div>
+            )}
+            {!callsLoading && calls.length === 0 && (
+              <div className="flex flex-col items-center gap-2 px-6 py-16 text-center">
+                <IconPhone className="h-8 w-8 text-ink-faint" />
+                <p className="text-sm text-ink-muted">Belum ada riwayat panggilan.</p>
+              </div>
+            )}
+            {calls.map((call) => {
+              // "diangkat" dianggap berhasil (panah masuk hijau) - selain itu (ditolak,
+              // tidak dijawab, tidak diangkat, ditolak otomatis) dianggap tak terjawab
+              // (panah merah), sama seperti WhatsApp membedakan panggilan masuk biasa vs
+              // "missed call" di tab Panggilannya.
+              const missed = call.outcome !== "diangkat";
+              return (
+                <button
+                  key={call.id}
+                  type="button"
+                  onClick={() => {
+                    setMainView("chats");
+                    selectConversation(call.waJid);
+                  }}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors active:scale-[0.98] active:bg-surface-hover hover:bg-surface-hover"
+                >
+                  <Avatar
+                    key={call.waJid}
+                    waJid={call.waJid}
+                    waNumber={call.waNumber}
+                    isGroup={call.isGroup}
+                    isChannel={false}
+                    channel={channel}
+                    extraAccountId={extraAccountId}
+                    sizeClass="h-12 w-12"
+                    iconClass="h-5 w-5"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center justify-between gap-2">
+                      <span
+                        className={`truncate text-[13px] font-medium text-ink ${
+                          call.isGroup || call.contactName ? "" : "font-mono"
+                        }`}
+                      >
+                        {call.isGroup ? (call.groupName ?? "Grup") : (call.contactName ?? formatPhone(call.waNumber))}
+                      </span>
+                      <span className="shrink-0 text-[10.5px] text-ink-faint">{relativeDuration(call.createdAt)}</span>
+                    </span>
+                    <span className="mt-0.5 flex items-center gap-1.5">
+                      {missed ? (
+                        <IconCallMissed className="h-3.5 w-3.5 shrink-0 text-pastel-red-ink" />
+                      ) : (
+                        <IconCallIn className="h-3.5 w-3.5 shrink-0 text-pastel-green-ink" />
+                      )}
+                      <span className={`truncate text-xs ${missed ? "text-pastel-red-ink" : "text-ink-muted"}`}>
+                        {call.outcome}
+                      </span>
+                      {call.isVideo && <IconVideoCall className="h-3.5 w-3.5 shrink-0 text-ink-faint" />}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         ) : (
           <>
             <div className="px-3 py-2.5">
@@ -864,19 +1174,18 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                       active ? "bg-pastel-blue" : "hover:bg-surface-hover"
                     }`}
                   >
-                    <span
-                      className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
-                        active ? "bg-surface text-pastel-blue-ink" : "bg-canvas text-ink-muted"
-                      }`}
-                    >
-                      {c.isChannel ? (
-                        <IconMegaphone className="h-5 w-5" />
-                      ) : c.isGroup ? (
-                        <IconUsers className="h-5 w-5" />
-                      ) : (
-                        initialsOf(c.waNumber)
-                      )}
-                    </span>
+                    <Avatar
+                      key={c.waJid}
+                      waJid={c.waJid}
+                      waNumber={c.waNumber}
+                      isGroup={c.isGroup}
+                      isChannel={c.isChannel}
+                      channel={channel}
+                      extraAccountId={extraAccountId}
+                      active={active}
+                      sizeClass="h-12 w-12"
+                      iconClass="h-5 w-5"
+                    />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center justify-between gap-2">
                         <span
@@ -1101,15 +1410,17 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                 <IconArrowLeft className="h-5 w-5" />
               </button>
               <div className="flex min-w-0 flex-1 items-center gap-2.5">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-canvas text-xs font-semibold text-ink-muted">
-                  {selected.isChannel ? (
-                    <IconMegaphone className="h-4 w-4" />
-                  ) : selected.isGroup ? (
-                    <IconUsers className="h-4 w-4" />
-                  ) : (
-                    initialsOf(selected.waNumber)
-                  )}
-                </span>
+                <Avatar
+                  key={selected.waJid}
+                  waJid={selected.waJid}
+                  waNumber={selected.waNumber}
+                  isGroup={selected.isGroup}
+                  isChannel={selected.isChannel}
+                  channel={channel}
+                  extraAccountId={extraAccountId}
+                  sizeClass="h-9 w-9"
+                  iconClass="h-4 w-4"
+                />
                 <div className="min-w-0">
                   <p
                     className={`truncate text-sm font-medium text-ink ${
@@ -1122,22 +1433,40 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                         ? (selected.groupName ?? "Grup")
                         : (selected.contactName ?? formatPhone(selected.waNumber))}
                   </p>
-                  <p className="text-[11px] text-ink-muted">
+                  <p className="truncate text-[11px] text-ink-muted">
                     {!selected.isGroup && !selected.isChannel && selected.contactName && (
                       <span className="font-mono">{formatPhone(selected.waNumber)} &middot; </span>
                     )}
-                    {selected.isChannel
-                      ? "Channel WA - siaran satu arah, tidak bisa dibalas"
-                      : selected.isGroup
-                        ? "Grup WA - percakapan manual"
-                        : channel === "EXTRA"
-                          ? "Percakapan manual"
-                          : selected.takeoverActive
-                            ? "Anda sedang mengambil alih"
-                            : "Bot menjawab otomatis"}
+                    {(() => {
+                      const presenceLabel = formatPresenceLabel(presence);
+                      if (presenceLabel) {
+                        return (
+                          <span className={presenceLabel.endsWith("...") ? "font-medium text-pastel-green-ink" : ""}>
+                            {presenceLabel}
+                          </span>
+                        );
+                      }
+                      return selected.isChannel
+                        ? "Channel WA - siaran satu arah, tidak bisa dibalas"
+                        : selected.isGroup
+                          ? "Grup WA - percakapan manual"
+                          : channel === "EXTRA"
+                            ? "Percakapan manual"
+                            : selected.takeoverActive
+                              ? "Anda sedang mengambil alih"
+                              : "Bot menjawab otomatis";
+                    })()}
                   </p>
                 </div>
               </div>
+              <button
+                type="button"
+                onClick={openMediaGallery}
+                title="Lihat semua media di percakapan ini"
+                className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full text-ink-muted transition-all hover:bg-surface-hover hover:text-ink active:scale-90"
+              >
+                <IconDocument className="h-4 w-4" />
+              </button>
               {channel === "SERVICE" && (
                 <button
                   type="button"
@@ -1194,13 +1523,33 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                   (isVideo && m.message === "[Video]") ||
                   (isOtherFile && m.message === "[Dokumen]");
                 const bubbleTextClass = m.direction === "OUTBOUND" ? "text-pastel-green-ink" : "text-ink";
+                const isHighlighted = highlightedMsgId === m.id;
                 return (
-                  <div key={m.id} className={`flex flex-col ${m.direction === "OUTBOUND" ? "items-end" : "items-start"}`}>
+                  <div
+                    key={m.id}
+                    id={`msg-${m.id}`}
+                    className={`flex flex-col ${m.direction === "OUTBOUND" ? "items-end" : "items-start"}`}
+                  >
                     <div
-                      className={`max-w-[80%] overflow-hidden rounded-2xl text-sm shadow-sm sm:max-w-[65%] ${
+                      className={`max-w-[80%] overflow-hidden rounded-2xl text-sm shadow-sm transition-colors duration-500 sm:max-w-[65%] ${
                         m.direction === "OUTBOUND" ? "rounded-tr-sm bg-pastel-green" : "rounded-tl-sm bg-surface"
-                      } ${bubbleTextClass} ${isDeleted ? "opacity-60" : ""}`}
+                      } ${bubbleTextClass} ${isDeleted ? "opacity-60" : ""} ${isHighlighted ? "ring-2 ring-pastel-blue-ink" : ""}`}
                     >
+                      {m.isForwarded && (
+                        <div className="flex items-center gap-1.5 px-3.5 pb-0.5 pt-2 text-[10.5px] italic opacity-60">
+                          <IconForward className="h-3.5 w-3.5 shrink-0" />
+                          Diteruskan
+                        </div>
+                      )}
+                      {m.quotedPreview && (
+                        <button
+                          type="button"
+                          onClick={() => m.quotedWaMessageId && scrollToQuoted(m.quotedWaMessageId)}
+                          className="mx-2.5 mt-2 block max-w-[calc(100%-1.25rem)] truncate rounded-md border-l-2 border-pastel-blue-ink bg-canvas/60 px-2 py-1 text-left text-[11.5px] text-ink-muted hover:bg-canvas"
+                        >
+                          {m.quotedPreview}
+                        </button>
+                      )}
                       {isViewOnce && (
                         <div className="flex items-center gap-1.5 px-3.5 pb-1 pt-2 text-[10.5px] font-medium uppercase tracking-wide opacity-70">
                           <IconViewOnce className="h-3.5 w-3.5 shrink-0" />
@@ -1295,6 +1644,19 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
                         </div>
                       )}
                     </div>
+                    {m.reactions.length > 0 && (
+                      <div className="-mt-1.5 flex flex-wrap gap-1 rounded-full bg-canvas px-1">
+                        {m.reactions.map((r) => (
+                          <span
+                            key={r.reactorJid}
+                            title={r.reactorName ?? r.reactorJid}
+                            className="rounded-full border border-line bg-surface px-1.5 py-0.5 text-xs shadow-sm"
+                          >
+                            {r.emoji}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <span className="mt-1 inline-flex items-center gap-1 text-[10.5px] text-ink-faint">
                       {m.direction === "OUTBOUND"
                         ? (m.adminName ?? (channel === "EXTRA" ? "Dibalas dari HP" : "Petugas"))
@@ -1397,6 +1759,74 @@ export function InboxClient({ initialConversations }: { initialConversations: Co
             onClick={(e) => e.stopPropagation()}
             className="max-h-full max-w-full rounded-lg object-contain"
           />
+        </div>
+      )}
+
+      {/* ---------- Galeri media satu percakapan (tombol "Media" di header thread) ---------- */}
+      {showMediaGallery && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setShowMediaGallery(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-lg"
+          >
+            <div className="flex items-center justify-between border-b border-line px-4 py-3">
+              <h2 className="font-serif text-base italic tracking-tight text-ink">Media</h2>
+              <button
+                type="button"
+                onClick={() => setShowMediaGallery(false)}
+                aria-label="Tutup"
+                className="flex h-7 w-7 items-center justify-center rounded-full text-ink-muted transition-colors hover:bg-surface-hover hover:text-ink"
+              >
+                <IconClose className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3">
+              {mediaLoading && <p className="py-10 text-center text-xs text-ink-faint">Memuat media...</p>}
+              {!mediaLoading && mediaItems?.length === 0 && (
+                <p className="py-10 text-center text-xs text-ink-faint">Belum ada foto/video/dokumen di percakapan ini.</p>
+              )}
+              {!mediaLoading && mediaItems && mediaItems.length > 0 && (
+                <div className="grid grid-cols-3 gap-1.5">
+                  {mediaItems.map((item) => {
+                    const isImg = item.attachmentMimeType?.startsWith("image/");
+                    const isVid = item.attachmentMimeType?.startsWith("video/");
+                    return isImg ? (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setShowMediaGallery(false);
+                          setLightboxUrl(item.attachmentUrl);
+                        }}
+                        className="aspect-square overflow-hidden rounded-md bg-canvas"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={item.attachmentUrl} alt="" className="h-full w-full object-cover" />
+                      </button>
+                    ) : (
+                      <a
+                        key={item.id}
+                        href={item.attachmentUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex aspect-square flex-col items-center justify-center gap-1 rounded-md bg-canvas p-2 text-center hover:bg-surface-hover"
+                      >
+                        {isVid ? (
+                          <IconVideoCall className="h-6 w-6 text-ink-faint" />
+                        ) : (
+                          <IconDocument className="h-6 w-6 text-ink-faint" />
+                        )}
+                        <span className="line-clamp-2 text-[9.5px] text-ink-faint">{isVid ? "Video" : item.caption}</span>
+                      </a>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

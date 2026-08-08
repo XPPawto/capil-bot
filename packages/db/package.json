@@ -14,7 +14,9 @@
     "studio": "dotenv -e ../../.env -- prisma studio",
     "seed": "dotenv -e ../../.env -- ts-node prisma/seed.ts",
     "set-access-control": "dotenv -e ../../.env -- ts-node scripts/setAccessControl.ts",
+    "set-master-lock": "dotenv -e ../../.env -- ts-node scripts/setMasterLock.ts",
     "backfill-audit-ledger": "dotenv -e ../../.env -- ts-node scripts/backfillAuditLedger.ts",
+    "backfill-call-log": "dotenv -e ../../.env -- ts-node scripts/backfillCallLog.ts",
     "build": "tsc -p tsconfig.json && dotenv -e ../../.env -- prisma generate"
   },
   "dependencies": {

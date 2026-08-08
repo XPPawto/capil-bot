@@ -1,5 +1,6 @@
 import { prisma, appendLedgerEntry, type InboxChannel, type InboxMessage } from "@kelurahan/db";
 import { logger } from "../logger";
+import type { QuotedInfo } from "./messageHandler";
 
 /**
  * Dipanggil saat warga chat bebas di luar alur formulir (bot tidak mengenali sebagai
@@ -53,6 +54,9 @@ async function createLedgeredInboxMessage(data: Parameters<typeof prisma.inboxMe
       createdAt: row.createdAt.toISOString(),
       latitude: row.latitude,
       longitude: row.longitude,
+      isForwarded: row.isForwarded,
+      quotedWaMessageId: row.quotedWaMessageId,
+      quotedPreview: row.quotedPreview,
     });
   } catch (err) {
     logger.error({ err, inboxMessageId: row.id }, "GAGAL menulis jejak audit ledger untuk pesan yang baru dicatat");
@@ -96,10 +100,72 @@ export interface GroupMeta {
 }
 
 /** Koordinat share-lokasi/live-location, kalau pesannya memang lokasi - lihat
- * extractLocationCoords di messageHandler.ts. */
+ * extractLocationCoords di messageHandler.ts. `isLive` membedakan share SEKALI KIRIM
+ * (locationMessage) dari LIVE LOCATION (liveLocationMessage, bisa berturut-turut mengirim
+ * update posisi baru selama share berlangsung) - dipakai logInboxMessage/logOutboundFromDevice
+ * untuk memilih jalur "update baris yang sudah ada" (lihat applyLiveLocationUpdate) alih-alih
+ * selalu bikin baris baru. */
 export interface LocationCoords {
   latitude: number;
   longitude: number;
+  isLive: boolean;
+}
+
+// Live location WhatsApp maksimal berlangsung 8 jam (pilihan durasi resmi: 15 menit/1 jam/8
+// jam) - dipakai sebagai jendela waktu "masih mungkin sedang berlangsung" saat mencari baris
+// live location TERAKHIR untuk waJid ini yang layak menerima update posisi baru, supaya share
+// lama yang sudah pasti berakhir tidak keliru dianggap masih aktif.
+const LIVE_LOCATION_WINDOW_MS = 8 * 60 * 60 * 1000;
+
+/**
+ * WhatsApp mengirim TIAP pembaruan posisi live location sebagai pesan BARU terpisah (masing-
+ * masing ID pesan sendiri, ada `sequenceNumber` yang naik) - bukan lewat mekanisme "edit"
+ * seperti protocolMessage. Tanpa penanganan khusus, tiap update akan tercatat sebagai baris
+ * baru sendiri-sendiri, bikin thread penuh pesan "Live Location" berturut-turut selama
+ * pengirimnya bergerak. Fungsi ini mencari baris live location TERAKHIR dari waJid+arah yang
+ * sama dalam jendela waktu wajar (LIVE_LOCATION_WINDOW_MS) dan meng-update posisinya DI
+ * TEMPAT kalau ketemu - satu bubble yang posisinya berubah, mirip tampilan WA asli. Kalau
+ * tidak ketemu (share baru, atau share lama sudah lewat jendela waktu), kembalikan false
+ * supaya pemanggil tahu harus bikin baris baru seperti biasa (share live location pertama
+ * kali). Update ini SENDIRI juga dicatat sebagai entri ledger baru (LIVE_LOCATION_UPDATED).
+ */
+export async function applyLiveLocationUpdate(
+  waJid: string,
+  direction: "INBOUND" | "OUTBOUND",
+  channel: InboxChannel,
+  newText: string,
+  coords: LocationCoords,
+  extraAccountId?: number
+): Promise<boolean> {
+  const since = new Date(Date.now() - LIVE_LOCATION_WINDOW_MS);
+  const existing = await prisma.inboxMessage.findFirst({
+    where: {
+      waJid,
+      direction,
+      channel,
+      ...(channel === "EXTRA" ? { extraAccountId } : {}),
+      message: { startsWith: "[Live Location]" },
+      createdAt: { gte: since },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!existing) return false;
+
+  await prisma.inboxMessage.update({
+    where: { id: existing.id },
+    data: { message: newText, latitude: coords.latitude, longitude: coords.longitude },
+  });
+  try {
+    await appendLedgerEntry("LIVE_LOCATION_UPDATED", existing.id, {
+      newMessage: newText,
+      latitude: coords.latitude,
+      longitude: coords.longitude,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    logger.error({ err, inboxMessageId: existing.id }, "GAGAL menulis jejak audit ledger untuk update live location");
+  }
+  return true;
 }
 
 /**
@@ -119,10 +185,18 @@ export async function logInboxMessage(
   group?: GroupMeta,
   extraAccountId?: number,
   waMessageId?: string,
-  coords?: LocationCoords
+  coords?: LocationCoords,
+  isForwarded?: boolean,
+  quoted?: QuotedInfo
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
+
+  if (coords?.isLive) {
+    const merged = await applyLiveLocationUpdate(waJid, "INBOUND", channel, trimmed, coords, extraAccountId);
+    if (merged) return;
+  }
+
   await createLedgeredInboxMessage({
     waJid,
     waNumber,
@@ -138,6 +212,9 @@ export async function logInboxMessage(
     waMessageId,
     latitude: coords?.latitude,
     longitude: coords?.longitude,
+    isForwarded: isForwarded ?? false,
+    quotedWaMessageId: quoted?.waMessageId,
+    quotedPreview: quoted?.preview,
   });
 }
 
@@ -156,10 +233,18 @@ export async function logOutboundFromDevice(
   group?: GroupMeta,
   extraAccountId?: number,
   waMessageId?: string,
-  coords?: LocationCoords
+  coords?: LocationCoords,
+  isForwarded?: boolean,
+  quoted?: QuotedInfo
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
+
+  if (coords?.isLive) {
+    const merged = await applyLiveLocationUpdate(waJid, "OUTBOUND", channel, trimmed, coords, extraAccountId);
+    if (merged) return;
+  }
+
   await createLedgeredInboxMessage({
     waJid,
     waNumber,
@@ -175,6 +260,9 @@ export async function logOutboundFromDevice(
     waMessageId,
     latitude: coords?.latitude,
     longitude: coords?.longitude,
+    isForwarded: isForwarded ?? false,
+    quotedWaMessageId: quoted?.waMessageId,
+    quotedPreview: quoted?.preview,
   });
 }
 
@@ -268,6 +356,47 @@ export async function applyMessageDelete(
 }
 
 /**
+ * Dipanggil kalau WhatsApp mengirim reactionMessage (reaksi emoji ke pesan yang sudah
+ * terkirim - beda dari edit/hapus, ini BUKAN protocolMessage, jalur deteksinya sendiri di
+ * messageHandler.ts). `emoji` kosong berarti pereaksi itu MEMBATALKAN reaksinya - baris
+ * MessageReaction tetap disimpan (bukan dihapus), cuma emoji-nya jadi "" (lihat komentar
+ * model di schema.prisma), supaya jejaknya tetap ada di ledger. Satu baris per (pesan,
+ * pereaksi) - upsert di tempat, bukan baris baru tiap kali orang yang sama ganti reaksi.
+ */
+export async function applyMessageReaction(
+  waJid: string,
+  waMessageId: string,
+  channel: InboxChannel,
+  reactorJid: string,
+  reactorName: string | undefined,
+  emoji: string,
+  extraAccountId?: number
+): Promise<boolean> {
+  const ids = await findMatchingInboxMessageIds(waJid, waMessageId, channel, extraAccountId);
+  if (ids.length === 0) return false;
+
+  const updatedAt = new Date();
+  for (const id of ids) {
+    await prisma.messageReaction.upsert({
+      where: { inboxMessageId_reactorJid: { inboxMessageId: id, reactorJid } },
+      create: { inboxMessageId: id, reactorJid, reactorName, emoji, updatedAt },
+      update: { emoji, reactorName, updatedAt },
+    });
+    try {
+      await appendLedgerEntry("REACTION_CHANGED", id, {
+        reactorJid,
+        reactorName: reactorName ?? null,
+        emoji,
+        updatedAt: updatedAt.toISOString(),
+      });
+    } catch (err) {
+      logger.error({ err, inboxMessageId: id }, "GAGAL menulis jejak audit ledger untuk reaksi pesan");
+    }
+  }
+  return true;
+}
+
+/**
  * Dipanggil saat WhatsApp mengabari perubahan status centang pesan KELUAR (messages.update,
  * lihat messageHandler.ts) - "SENT" (satu centang, sudah sampai server WA), "DELIVERED" (dua
  * centang abu-abu, sudah sampai HP lawan bicara), "READ" (dua centang biru, sudah dibaca/
@@ -324,7 +453,8 @@ export async function logInboxCallEvent(
   isVideo: boolean,
   outcome: string,
   channel: InboxChannel = "SERVICE",
-  extraAccountId?: number
+  extraAccountId?: number,
+  group?: { isGroup: boolean; groupName: string }
 ): Promise<void> {
   const label = isVideo ? "Panggilan video" : "Panggilan suara";
   await createLedgeredInboxMessage({
@@ -335,4 +465,25 @@ export async function logInboxCallEvent(
     direction: "INBOUND",
     message: `[${label} masuk - ${outcome}]`,
   });
+
+  // Baris TERPISAH di CallLog (bukan cuma InboxMessage di atas) supaya tab "Riwayat
+  // Panggilan" di /admin-xpawto bisa query langsung ke tabel terstruktur, bukan menyaring
+  // teks InboxMessage dengan awalan string. Best-effort murni - gagal di sini tidak boleh
+  // menggagalkan pencatatan InboxMessage di atas (yang sudah berhasil tersimpan).
+  try {
+    await prisma.callLog.create({
+      data: {
+        waJid,
+        waNumber,
+        channel,
+        extraAccountId,
+        isVideo,
+        isGroup: group?.isGroup ?? false,
+        groupName: group?.groupName,
+        outcome,
+      },
+    });
+  } catch (err) {
+    logger.error({ err, waJid, channel, extraAccountId }, "Gagal mencatat baris CallLog untuk panggilan");
+  }
 }

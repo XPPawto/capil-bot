@@ -1,4 +1,4 @@
-import { extractMessageContent, proto, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
+import { extractMessageContent, getContentType, proto, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
 import type { InboxChannel } from "@kelurahan/db";
 import { logger } from "../logger";
 import { handleConversationMessage } from "./handler";
@@ -9,6 +9,7 @@ import { isHumanTakeoverActive } from "./humanTakeover";
 import {
   applyMessageDelete,
   applyMessageEdit,
+  applyMessageReaction,
   logInboundIfActiveRequest,
   logInboxMessage,
   logOutboundFromDevice,
@@ -110,11 +111,83 @@ export function extractLocationCoords(msg: WAMessage): LocationCoords | undefine
   const raw = msg.message;
   if (!raw) return undefined;
   const m = extractMessageContent(raw) ?? raw;
+  // liveLocationMessage (bisa berturut-turut mengirim update posisi baru selama share
+  // berlangsung) dibedakan dari locationMessage (share sekali kirim, tidak pernah update) -
+  // dipakai messageLog.ts memilih jalur "update baris yang sudah ada" (applyLiveLocationUpdate)
+  // untuk yang live, supaya orang yang bergerak tidak numpuk jadi banyak pesan terpisah.
+  const isLive = Boolean(m.liveLocationMessage);
   const loc = m.locationMessage ?? m.liveLocationMessage;
   const lat = loc?.degreesLatitude;
   const lng = loc?.degreesLongitude;
   if (lat == null || lng == null) return undefined;
-  return { latitude: lat, longitude: lng };
+  return { latitude: lat, longitude: lng, isLive };
+}
+
+/** contextInfo TIDAK punya satu tempat tetap - ada di dalam objek tipe pesan yang mana pun
+ * yang sedang aktif (extendedTextMessage, imageMessage, videoMessage, dst), makanya WAJIB
+ * dicari lewat getContentType (Baileys) dulu, bukan diasumsikan satu field tertentu. Dipakai
+ * bersama oleh extractQuotedInfo & extractIsForwarded di bawah. */
+function getContextInfo(m: proto.IMessage): proto.IContextInfo | undefined {
+  const type = getContentType(m);
+  if (!type) return undefined;
+  return (m as unknown as Record<string, { contextInfo?: proto.IContextInfo } | undefined>)[type]?.contextInfo;
+}
+
+export interface QuotedInfo {
+  waMessageId: string;
+  preview: string;
+}
+
+// Kolom quotedPreview di database VARCHAR(191) (memang cuma dimaksudkan pratinjau pendek,
+// bukan isi lengkap - beda dari kolom `message` yang @db.Text) - dipotong di sini supaya
+// tidak pernah melebihi itu, bukan mengandalkan MySQL memotong diam-diam.
+const QUOTED_PREVIEW_MAX_LENGTH = 180;
+
+/** Ringkasan pendek isi pesan (teks apa adanya, atau label "[Foto]"/"[Video]"/dst untuk
+ * media) - dipakai baik untuk pratinjau kutipan balasan (di bawah) maupun andaikan perlu
+ * ringkasan serupa di tempat lain nanti. */
+function summarizeQuotedContent(quoted: proto.IMessage): string {
+  const text = (() => {
+    if (quoted.conversation) return quoted.conversation;
+    if (quoted.extendedTextMessage?.text) return quoted.extendedTextMessage.text;
+    if (quoted.imageMessage) return quoted.imageMessage.caption ? `[Foto] ${quoted.imageMessage.caption}` : "[Foto]";
+    if (quoted.videoMessage) return quoted.videoMessage.caption ? `[Video] ${quoted.videoMessage.caption}` : "[Video]";
+    if (quoted.audioMessage) return quoted.audioMessage.ptt ? "[Pesan suara]" : "[Audio]";
+    if (quoted.documentMessage) return quoted.documentMessage.fileName ? `[Dokumen] ${quoted.documentMessage.fileName}` : "[Dokumen]";
+    if (quoted.stickerMessage) return "[Stiker]";
+    if (quoted.locationMessage || quoted.liveLocationMessage) return "[Lokasi]";
+    return "[Pesan]";
+  })();
+  return text.length > QUOTED_PREVIEW_MAX_LENGTH ? `${text.slice(0, QUOTED_PREVIEW_MAX_LENGTH - 1)}…` : text;
+}
+
+/**
+ * Info "membalas pesan X" (reply/kutipan) - dipakai UI menampilkan potongan pesan asli di
+ * atas balasannya, persis WA. `waMessageId` di sini adalah ID pesan yang DIKUTIP (bukan ID
+ * pesan balasan ini sendiri) - dipakai UI mencocokkan ke pesan yang sama persis kalau
+ * kebetulan masih ada di jendela thread yang sedang dimuat (bisa lompat/scroll ke situ),
+ * kalau tidak ya cukup tampilkan `preview`-nya saja (sudah diekstrak & disimpan permanen
+ * saat pesan ini pertama masuk, tidak bergantung pesan aslinya masih ada di database).
+ */
+export function extractQuotedInfo(msg: WAMessage): QuotedInfo | undefined {
+  const raw = msg.message;
+  if (!raw) return undefined;
+  const m = extractMessageContent(raw) ?? raw;
+  const contextInfo = getContextInfo(m);
+  const quoted = contextInfo?.quotedMessage;
+  const stanzaId = contextInfo?.stanzaId;
+  if (!quoted || !stanzaId) return undefined;
+  return { waMessageId: stanzaId, preview: summarizeQuotedContent(quoted) };
+}
+
+/** Pesan yang DITERUSKAN (forward, bisa dari chat lain manapun) - WhatsApp menandainya lewat
+ * contextInfo.isForwarded, sama sekali terpisah dari fitur reply/kutipan di atas (satu pesan
+ * bisa forwarded TANPA reply, atau reply TANPA forwarded, atau dua-duanya sekaligus). */
+export function extractIsForwarded(msg: WAMessage): boolean {
+  const raw = msg.message;
+  if (!raw) return false;
+  const m = extractMessageContent(raw) ?? raw;
+  return Boolean(getContextInfo(m)?.isForwarded);
 }
 
 /**
@@ -227,6 +300,64 @@ export async function handleMessageDeleteIfPresent(
   return true;
 }
 
+export interface ReactionInfo {
+  targetWaMessageId: string;
+  emoji: string;
+}
+
+/** reactionMessage BUKAN protocolMessage (beda jalur sinyal dari edit/hapus) - key.id di
+ * dalamnya menunjuk ke pesan ASLI yang direaksi, text kosong ("") berarti reaksi dibatalkan. */
+export function extractReaction(msg: WAMessage): ReactionInfo | undefined {
+  const reaction = msg.message?.reactionMessage;
+  const targetWaMessageId = reaction?.key?.id;
+  if (!reaction || !targetWaMessageId) return undefined;
+  return { targetWaMessageId, emoji: reaction.text ?? "" };
+}
+
+/**
+ * Kalau pesan ini adalah REAKSI ke pesan yang sudah terkirim sebelumnya, terapkan lewat
+ * applyMessageReaction - HANYA baris pesan yang direaksi itu yang tersentuh. Kembalikan true
+ * kalau ini memang event reaksi (supaya pemanggil berhenti di sini) - reaksi TIDAK PUNYA teks
+ * sama sekali, kalau lolos ke alur pemrosesan pesan normal bisa keliru dianggap "pesan kosong"
+ * dan memicu balasan bot yang tidak relevan.
+ */
+export interface ReactionHandleResult {
+  /** true kalau ini memang event reaksi (apa pun hasil penerapannya) - dipakai gerbang
+   * "continue" di pemanggil, supaya reaksi tidak pernah lanjut diproses sebagai pesan baru
+   * biasa (reaksi tidak punya teks sama sekali). */
+  isReaction: boolean;
+  /** true kalau reaksinya BERHASIL ditempelkan ke baris pesan yang dituju. Bisa false kalau
+   * pesan aslinya tidak pernah tercatat di Pesan Masuk sama sekali (mis. gagal decrypt saat
+   * pertama masuk - lihat catatan session desync untuk JID tertentu di sesi ini) - bukan bug
+   * di fitur reaksi ini sendiri, cuma tidak ada baris untuk ditempeli. */
+  applied: boolean;
+}
+
+export async function handleReactionIfPresent(
+  msg: WAMessage,
+  jid: string,
+  channel: InboxChannel,
+  extraAccountId?: number
+): Promise<ReactionHandleResult> {
+  const reaction = extractReaction(msg);
+  if (!reaction) return { isReaction: false, applied: false };
+
+  const isGroupChat = jid.endsWith("@g.us");
+  // "self" dipakai apa adanya (bukan JID akun sendiri) - lihat komentar model MessageReaction
+  // di schema.prisma untuk alasannya.
+  const reactorJid = msg.key.fromMe ? "self" : isGroupChat ? (extractParticipantNumber(msg) ?? jid) : jid;
+  const reactorName = msg.key.fromMe ? undefined : (msg.pushName ?? undefined);
+
+  let applied = false;
+  try {
+    applied = await applyMessageReaction(jid, reaction.targetWaMessageId, channel, reactorJid, reactorName, reaction.emoji, extraAccountId);
+    logger.info({ jid, reaction, channel, extraAccountId, applied }, "Reaksi pesan diproses");
+  } catch (err) {
+    logger.error({ err, jid, reaction }, "Gagal menerapkan reaksi pesan");
+  }
+  return { isReaction: true, applied };
+}
+
 /**
  * Event centang WA (messages.update) - dikirim WhatsApp saat status pengiriman pesan KELUAR
  * berubah (terkirim ke server -> sampai HP lawan bicara -> dibaca/diputar). Cuma relevan
@@ -318,9 +449,10 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
 
     if (await handleMessageEditIfPresent(msg, jid, "SERVICE")) continue;
     if (await handleMessageDeleteIfPresent(msg, jid, "SERVICE")) continue;
+    if ((await handleReactionIfPresent(msg, jid, "SERVICE")).isReaction) continue;
 
-    // Selain edit/hapus (ditangani di atas), sisa alur di bawah ini HANYA untuk payload "notify"
-    // (pesan baru sungguhan) - "append" bisa berisi event lain yang bukan pesan baru dan
+    // Selain edit/hapus/reaksi (ditangani di atas), sisa alur di bawah ini HANYA untuk payload
+    // "notify" (pesan baru sungguhan) - "append" bisa berisi event lain yang bukan pesan baru dan
     // salah kalau ikut diproses sebagai input warga/alur bot.
     if (payload.type !== "notify") continue;
 
@@ -345,7 +477,10 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
 
       try {
         if (text) {
-          await logOutboundFromDevice(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined, extractLocationCoords(msg));
+          await logOutboundFromDevice(
+            jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined,
+            extractLocationCoords(msg), extractIsForwarded(msg), extractQuotedInfo(msg)
+          );
         }
         await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group, "OUTBOUND");
       } catch (err) {
@@ -375,7 +510,12 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
       };
 
       try {
-        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined, extractLocationCoords(msg));
+        if (text) {
+          await logInboxMessage(
+            jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined,
+            extractLocationCoords(msg), extractIsForwarded(msg), extractQuotedInfo(msg)
+          );
+        }
         await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group);
       } catch (err) {
         logger.error({ err, jid }, "Gagal mencatat pesan grup ke kotak masuk");
@@ -393,7 +533,12 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
       const group: GroupMeta = { isGroup: false, isChannel: true, groupName: await getChannelName(sock, jid) };
 
       try {
-        if (text) await logInboxMessage(jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined, extractLocationCoords(msg));
+        if (text) {
+          await logInboxMessage(
+            jid, waNumber, text, "SERVICE", group, undefined, msg.key.id ?? undefined,
+            extractLocationCoords(msg), extractIsForwarded(msg), extractQuotedInfo(msg)
+          );
+        }
         await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group);
       } catch (err) {
         logger.error({ err, jid }, "Gagal mencatat postingan channel ke kotak masuk");
@@ -425,9 +570,10 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
     // Dicatat lebih dulu, terlepas dari state/takeover - dasar halaman "Pesan Masuk" yang
     // menampilkan SEMUA nomor yang pernah chat bot, bukan cuma yang punya pengajuan aktif.
     if (inboxText) {
-      logInboxMessage(jid, waNumber, inboxText, "SERVICE", contact, undefined, msg.key.id ?? undefined, extractLocationCoords(msg)).catch((err) =>
-        logger.error({ err, jid }, "Gagal mencatat pesan ke kotak masuk")
-      );
+      logInboxMessage(
+        jid, waNumber, inboxText, "SERVICE", contact, undefined, msg.key.id ?? undefined,
+        extractLocationCoords(msg), extractIsForwarded(msg), extractQuotedInfo(msg)
+      ).catch((err) => logger.error({ err, jid }, "Gagal mencatat pesan ke kotak masuk"));
     }
     // Foto/dokumen yang dikirim warga juga direkam ke kotak masuk (kalau ada) - lihat
     // komentar di media/inboxMedia.ts untuk alasan ini tidak mengganggu alur syarat resmi.

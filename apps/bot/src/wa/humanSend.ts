@@ -1,4 +1,4 @@
-import { generateMessageID, type AnyMessageContent, type WASocket } from "@whiskeysockets/baileys";
+import { generateMessageID, type AnyMessageContent, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
 import { markAsSentByDashboard } from "./sentMessageTracker";
 
 const MIN_DELAY_MS = 2000;
@@ -42,7 +42,8 @@ function jitterDelayMs(): number {
 export async function humanSendMessage(
   sock: WASocket,
   jid: string,
-  content: AnyMessageContent
+  content: AnyMessageContent,
+  quoted?: WAMessage
 ): ReturnType<WASocket["sendMessage"]> {
   const messageId = generateMessageID();
   markAsSentByDashboard(messageId);
@@ -61,5 +62,5 @@ export async function humanSendMessage(
     // ignore
   }
 
-  return sock.sendMessage(jid, content, { messageId });
+  return sock.sendMessage(jid, content, { messageId, quoted });
 }

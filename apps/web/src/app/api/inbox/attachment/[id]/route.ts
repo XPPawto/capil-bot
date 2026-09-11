@@ -10,8 +10,8 @@ const UPLOAD_DIR = path.resolve(process.cwd(), "../..", process.env.UPLOAD_DIR ?
 /**
  * Menyajikan lampiran (foto/dokumen) pada thread Pesan Masuk. Id yang dipakai sama dengan
  * skema id gabungan di ../[waJid]/messages/route.ts ("i123" = InboxMessage, "r123" =
- * RequestMessage) - satu route ini melayani lampiran dari sumber mana pun tanpa klien
- * perlu tahu tabel aslinya.
+ * RequestMessage, "s123" = ContactStatusUpdate - lihat api/inbox/statuses/route.ts) - satu
+ * route ini melayani lampiran dari sumber mana pun tanpa klien perlu tahu tabel aslinya.
  */
 export async function GET(
   _req: NextRequest,
@@ -36,6 +36,10 @@ export async function GET(
     attachmentMimeType = row?.attachmentMimeType ?? null;
   } else if (prefix === "r") {
     const row = await prisma.requestMessage.findUnique({ where: { id: numId } });
+    attachmentPath = row?.attachmentPath ?? null;
+    attachmentMimeType = row?.attachmentMimeType ?? null;
+  } else if (prefix === "s") {
+    const row = await prisma.contactStatusUpdate.findUnique({ where: { id: numId } });
     attachmentPath = row?.attachmentPath ?? null;
     attachmentMimeType = row?.attachmentMimeType ?? null;
   } else {

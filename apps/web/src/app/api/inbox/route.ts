@@ -9,6 +9,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const channel = req.nextUrl.searchParams.get("channel") === "EXTRA" ? "EXTRA" : "SERVICE";
   const extraAccountIdParam = req.nextUrl.searchParams.get("extraAccountId");
   const extraAccountId = extraAccountIdParam ? Number(extraAccountIdParam) : undefined;
-  const conversations = await getInboxConversations(channel, extraAccountId);
+  const archived = req.nextUrl.searchParams.get("archived") === "1";
+  const conversations = await getInboxConversations(channel, extraAccountId, { archived });
   return NextResponse.json({ conversations });
 }

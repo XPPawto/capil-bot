@@ -145,7 +145,7 @@ export default async function RiwayatPage({
         </div>
         <button
           type="submit"
-          className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90"
+          className="rounded-md bg-brand px-3.5 py-2 text-sm font-medium text-brand-ink transition-colors hover:bg-brand-hover"
         >
           Filter
         </button>

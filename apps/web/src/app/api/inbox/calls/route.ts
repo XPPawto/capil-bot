@@ -33,16 +33,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         where: { waJid: { in: waJids }, direction: "INBOUND" },
         orderBy: { createdAt: "desc" },
         distinct: ["waJid"],
-        select: { waJid: true, senderName: true },
+        select: { waJid: true, senderName: true, waNumber: true },
       })
     : [];
   const contactNameByWaJid = new Map(contactRows.filter((r) => r.senderName).map((r) => [r.waJid, r.senderName as string]));
+  // Nomor HP asli dari pesan MASUK (selalu lewat senderPn, tepercaya) - dipakai menimpa
+  // waNumber CallLog yang mungkin masih berupa ID internal "@lid" untuk baris LAMA (sebelum
+  // resolusi di sisi bot ada). Baris baru sudah benar dari sananya (logInboxCallEvent).
+  const bestNumberByWaJid = new Map(contactRows.map((r) => [r.waJid, r.waNumber]));
 
   return NextResponse.json({
     calls: rows.map((r) => ({
       id: r.id,
       waJid: r.waJid,
-      waNumber: r.waNumber,
+      waNumber: r.isGroup ? r.waNumber : (bestNumberByWaJid.get(r.waJid) ?? r.waNumber),
       isVideo: r.isVideo,
       isGroup: r.isGroup,
       groupName: r.groupName,

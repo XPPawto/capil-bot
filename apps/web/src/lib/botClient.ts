@@ -109,20 +109,61 @@ export async function notifyTakeover(waJid: string, active: boolean): Promise<bo
  * Balasan bebas dari halaman Pesan Masuk - beda dari sendCustomMessage karena tidak
  * terikat pada Request, warga yang dibalas bisa jadi belum pernah mengajukan apa pun.
  */
+export interface QuotedReplyInfo {
+  waMessageId: string;
+  fromMe: boolean;
+  text: string;
+}
+
 export async function sendInboxReply(
   waJid: string,
   message: string,
   channel: "SERVICE" | "EXTRA" = "SERVICE",
-  extraAccountId?: number
+  extraAccountId?: number,
+  quoted?: QuotedReplyInfo
 ): Promise<{ ok: boolean; waMessageId?: string }> {
   try {
     const res = await callControlServer("/notify/inbox-reply", {
       method: "POST",
-      body: JSON.stringify({ waJid, message, channel, extraAccountId }),
+      body: JSON.stringify({
+        waJid,
+        message,
+        channel,
+        extraAccountId,
+        quotedWaMessageId: quoted?.waMessageId,
+        quotedFromMe: quoted?.fromMe,
+        quotedText: quoted?.text,
+      }),
     });
     if (!res.ok) return { ok: false };
     const data = await res.json().catch(() => ({}));
     return { ok: true, waMessageId: data.waMessageId ?? undefined };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Kirim reaksi emoji ke pesan warga lewat WA asli - beda dari reaksi yang cuma dicatat
+ * pasif kalau warga/HP akun sendiri yang reaksi (lihat handleReactionIfPresent di sisi
+ * bot), ini yang MEMICU pengiriman sungguhan. `participant` cuma relevan untuk pesan grup
+ * yang direaksi (JID pengirim ASLI pesan itu di dalam grup, bukan JID grupnya).
+ */
+export async function sendInboxReaction(
+  waJid: string,
+  waMessageId: string,
+  fromMe: boolean,
+  emoji: string,
+  channel: "SERVICE" | "EXTRA" = "SERVICE",
+  extraAccountId?: number,
+  participant?: string
+): Promise<{ ok: boolean }> {
+  try {
+    const res = await callControlServer("/notify/inbox-reaction", {
+      method: "POST",
+      body: JSON.stringify({ waJid, waMessageId, fromMe, participant, emoji, channel, extraAccountId }),
+    });
+    return { ok: res.ok };
   } catch {
     return { ok: false };
   }

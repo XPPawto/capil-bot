@@ -1,5 +1,6 @@
 import { WAMessageStubType } from "@whiskeysockets/baileys";
 import type { WAMessage, WASocket } from "@whiskeysockets/baileys";
+import { prisma } from "@kelurahan/db";
 import { logger } from "../logger";
 import { checkRateLimit } from "./rateLimit";
 import { logInboxMessage, logOutboundFromDevice, logInboxCallEvent, type GroupMeta } from "./messageLog";
@@ -15,11 +16,13 @@ import {
   handleMessageDeleteIfPresent,
   handleMessageEditIfPresent,
   handleReactionIfPresent,
+  historyMessageTimestamp,
   resolveWaNumberForOutbound,
 } from "./messageHandler";
 import { getGroupName } from "../wa/groupNameCache";
 import { getChannelName } from "../wa/channelNameCache";
 import { wasSentByDashboard } from "../wa/sentMessageTracker";
+import { handleExtraAccountStatusUpdate } from "./statusHandler";
 import { forwardTelegramChatActivity, notifyTelegramChatEvent, notifyTelegramReaction } from "../notify/telegramNotify";
 
 interface MessagesUpsertPayload {
@@ -84,7 +87,15 @@ export async function handleExtraAccountIncomingMessages(
   for (const msg of payload.messages) {
     const jid = msg.key.remoteJid;
     if (!jid) continue;
-    if (jid === "status@broadcast" || jid.endsWith("@broadcast")) continue;
+    if (jid === "status@broadcast") {
+      if (payload.type === "notify") {
+        handleExtraAccountStatusUpdate(sock, msg, accountId).catch((err) =>
+          logger.error({ err, accountId }, "Gagal memproses status warga")
+        );
+      }
+      continue;
+    }
+    if (jid.endsWith("@broadcast")) continue;
 
     // Kiriman "sekali lihat" datang sebagai amplop KOSONG - WhatsApp tidak pernah
     // mengirimkan isinya ke perangkat tertaut. Wajib ditangani DI SINI, sebelum pagar
@@ -293,5 +304,97 @@ export async function handleExtraAccountIncomingMessages(
       senderNumber: group?.senderNumber,
       waNumber,
     }).catch((err) => logger.warn({ err, jid, accountId }, "Gagal mengirim notifikasi Telegram"));
+  }
+}
+
+/**
+ * Dipanggil dari event `messaging-history.set` Baileys (lihat wa/extraAccountManager.ts,
+ * `syncFullHistory: true` untuk akun ekstra) - WhatsApp cuma mengirim event ini SEKALI ke
+ * device yang BARU PERTAMA KALI ditautkan (scan QR/pairing baru), bukan retroaktif untuk
+ * akun yang sudah lama tertaut. Isinya seberapa banyak history yang WhatsApp SENDIRI putuskan
+ * untuk dikirim (bukan literally seluruh riwayat sejak akun dibuat), dari SEMUA chat/grup di
+ * nomor itu - bukan cuma yang relevan ke kelurahan.
+ *
+ * Beda sengaja dari handleExtraAccountIncomingMessages (pesan live):
+ *  - TIDAK ada notifikasi Telegram (ratusan/ribuan pesan lama sekaligus akan membanjiri chat
+ *    Telegram pemilik kalau ikut diteruskan).
+ *  - TIDAK ada rate limit / pengecekan echo dashboard (keduanya cuma relevan untuk pesan
+ *    live yang baru masuk detik ini).
+ *  - createdAt DIISI dari messageTimestamp pesan aslinya (bukan waktu import) - supaya
+ *    urutan chat di /admin-xpawto tetap sesuai kejadian aslinya, bukan semuanya numpuk
+ *    seolah baru masuk barusan.
+ *  - Dedup lewat waMessageId sebelum insert - Baileys bisa mengirim ulang event yang sama
+ *    (mis. syncType RECENT menyusul ON_DEMAND) tiap reconnect awal.
+ *  - Pesan sistem (edit/hapus/reaksi/panggilan lama, messageStubType apa pun) DILEWATI -
+ *    tanpa pesan aslinya di database, event-event itu tidak ada gunanya diproses sendirian.
+ */
+export async function handleExtraAccountHistorySync(
+  sock: WASocket,
+  payload: { messages: WAMessage[] },
+  accountId: number
+): Promise<void> {
+  for (const msg of payload.messages) {
+    const jid = msg.key.remoteJid;
+    if (!jid) continue;
+    if (jid === "status@broadcast" || jid.endsWith("@broadcast")) continue;
+    if (!msg.message) continue;
+    if (msg.messageStubType) continue;
+    if (msg.message.protocolMessage || msg.message.reactionMessage) continue;
+
+    const waMessageId = msg.key.id ?? undefined;
+    if (waMessageId) {
+      const already = await prisma.inboxMessage.findFirst({
+        where: { waJid: jid, waMessageId, channel: "EXTRA", extraAccountId: accountId },
+        select: { id: true },
+      });
+      if (already) continue;
+    }
+
+    const isFromMe = Boolean(msg.key.fromMe);
+    if (jid.endsWith("@newsletter") && isFromMe) continue;
+
+    const isGroup = jid.endsWith("@g.us");
+    const isChannel = jid.endsWith("@newsletter");
+    const text = extractInboxText(msg);
+    const createdAt = historyMessageTimestamp(msg);
+
+    let waNumber: string;
+    let group: GroupMeta | undefined;
+    if (isGroup) {
+      const senderNumber = isFromMe ? undefined : extractParticipantNumber(msg);
+      waNumber = senderNumber ?? jid.split("@")[0];
+      group = {
+        isGroup: true,
+        groupName: await getGroupName(sock, jid),
+        senderNumber,
+        senderName: isFromMe ? undefined : (msg.pushName ?? undefined),
+      };
+    } else if (isChannel) {
+      waNumber = jid.split("@")[0];
+      group = { isGroup: false, isChannel: true, groupName: await getChannelName(sock, jid) };
+    } else {
+      waNumber = isFromMe ? await resolveWaNumberForOutbound(sock, jid) : extractWaNumber(msg, jid);
+      if (!isFromMe && msg.pushName) {
+        group = { isGroup: false, senderName: msg.pushName };
+      }
+    }
+
+    const direction: "INBOUND" | "OUTBOUND" = isFromMe ? "OUTBOUND" : "INBOUND";
+
+    try {
+      if (text) {
+        const coords = extractLocationCoords(msg);
+        const isForwarded = extractIsForwarded(msg);
+        const quoted = extractQuotedInfo(msg);
+        if (isFromMe) {
+          await logOutboundFromDevice(jid, waNumber, text, "EXTRA", group, accountId, waMessageId, coords, isForwarded, quoted, createdAt);
+        } else {
+          await logInboxMessage(jid, waNumber, text, "EXTRA", group, accountId, waMessageId, coords, isForwarded, quoted, createdAt);
+        }
+      }
+      await logInboxMediaIfPresent(sock, msg, jid, waNumber, "EXTRA", group, direction, accountId, createdAt);
+    } catch (err) {
+      logger.error({ err, jid, accountId }, "Gagal mencatat pesan histori akun ekstra ke kotak masuk");
+    }
   }
 }

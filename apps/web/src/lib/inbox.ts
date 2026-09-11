@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import type { InboxChannel } from "@prisma/client";
+import { Prisma, type InboxChannel } from "@prisma/client";
 
 export interface InboxConversation {
   waJid: string;
@@ -14,57 +14,116 @@ export interface InboxConversation {
   lastSenderName: string | null;
   /** Nama profil WA lawan bicara (bukan grup) - null kalau belum pernah terekam. */
   contactName: string | null;
+  pinned: boolean;
+  archived: boolean;
+  /** Ditandai manual lewat menu klik-kanan ("Tandai belum dibaca") - lihat
+   * InboxConversationState.manualUnreadAt di schema.prisma. Independen dari badge "belum
+   * dibalas" bawaan (lastDirection === INBOUND). */
+  manualUnread: boolean;
+}
+
+/** InboxConversationState.extraAccountId pakai sentinel 0 buat SERVICE (lihat komentar
+ * model di schema.prisma - unique index gabungan MySQL tidak menganggap NULL=NULL). */
+function conversationStateAccountId(channel: InboxChannel, extraAccountId?: number): number {
+  return channel === "EXTRA" ? (extraAccountId ?? 0) : 0;
+}
+
+/** Satu-satunya jalur tulis ke InboxConversationState - dipakai rute pin/arsip/tandai
+ * belum-dibaca. Upsert supaya percakapan yang belum pernah disentuh (belum ada barisnya
+ * sama sekali) tetap bisa langsung di-pin/diarsipkan pertama kali. */
+export async function upsertConversationState(
+  waJid: string,
+  channel: InboxChannel,
+  extraAccountId: number | undefined,
+  patch: { pinnedAt?: Date | null; archivedAt?: Date | null; manualUnreadAt?: Date | null }
+): Promise<void> {
+  const accountId = conversationStateAccountId(channel, extraAccountId);
+  await prisma.inboxConversationState.upsert({
+    where: { waJid_channel_extraAccountId: { waJid, channel, extraAccountId: accountId } },
+    create: { waJid, channel, extraAccountId: accountId, ...patch },
+    update: patch,
+  });
+}
+
+// Baris hasil kueri "satu pesan terakhir per percakapan" - lihat catatan performa di
+// getInboxConversations. isGroup/isChannel datang sebagai 0/1 (tinyint) dari raw query.
+interface LatestRow {
+  waJid: string;
+  waNumber: string;
+  message: string;
+  direction: "INBOUND" | "OUTBOUND";
+  createdAt: Date;
+  isGroup: number | boolean;
+  isChannel: number | boolean;
+  groupName: string | null;
+  senderName: string | null;
+}
+
+interface LatestInboundRow {
+  waJid: string;
+  waNumber: string;
+  senderName: string | null;
+  isGroup: number | boolean;
+  isChannel: number | boolean;
+}
+
+function accountFilter(channel: InboxChannel, extraAccountId?: number) {
+  return channel === "EXTRA" && extraAccountId != null
+    ? Prisma.sql`AND extraAccountId = ${extraAccountId}`
+    : Prisma.empty;
 }
 
 /**
  * Kotak masuk cuma mulai mencatat SEMUA pesan mentah (InboxMessage) sejak fitur ini
  * di-deploy - WhatsApp/Baileys tidak punya cara menarik ulang histori chat lama secara
  * andal (history sync bawaan Baileys cuma jalan sekali saat perangkat BARU ditautkan lewat
- * QR, sengaja dimatikan di proyek ini karena berat & tidak reliabel, dan tidak berlaku
- * surut untuk sesi yang sudah lama tertaut).
+ * QR, sengaja dimatikan di proyek ini karena berat & tidak reliabel).
  *
  * Untuk histori SEBELUM fitur ini ada, satu-satunya teks asli yang pernah benar-benar
- * tersimpan adalah percakapan bebas yang terjadi selagi seseorang punya Request aktif
- * (tabel RequestMessage) - itu digabung di sini apa adanya. Warga yang chat tanpa pernah
- * punya Request aktif dan sebelum fitur ini ada TIDAK bisa dimunculkan lagi - teksnya
- * memang tidak pernah tersimpan di mana pun.
+ * tersimpan adalah percakapan bebas selagi seseorang punya Request aktif (tabel
+ * RequestMessage) - digabung di sini untuk channel SERVICE.
  *
- * `channel` memisahkan percakapan lewat nomor layanan (SERVICE, ada alur Request/bot) dari
- * akun ekstra (EXTRA, murni perangkat tertaut manual - tidak ada Request sama sekali, jadi
- * RequestMessage tidak pernah ikut digabung untuk channel ini). Kalau channel EXTRA, WAJIB
- * sertakan `extraAccountId` - bisa ada banyak akun ekstra sekaligus (Akun Kedua, Ketiga,
- * dst), masing-masing punya daftar percakapannya sendiri. Grup WA (isGroup) cuma pernah
- * muncul di channel EXTRA - handler nomor layanan sengaja tidak memproses grup.
+ * PERFORMA (ini yang membuat akun ramai dulu lambat sekali dibuka): dulu "satu baris terakhir
+ * per percakapan" diambil lewat `prisma.inboxMessage.findMany({ distinct: ["waJid"] })`. Untuk
+ * MySQL, Prisma TIDAK menerjemahkan `distinct` ke SQL - ia MENGAMBIL SEMUA baris yang cocok ke
+ * memori Node lalu men-dedupe di sana. Akun dengan ribuan pesan berarti ribuan baris ditarik
+ * TIAP poll (daftar tiap 6 dtk + badge belum-dibalas per akun). Diganti kueri GROUP BY yang
+ * cuma mengambil TEPAT satu baris terakhir per percakapan (lewat MAX(id), didukung index
+ * komposit di schema.prisma) - beban jadi ~jumlah percakapan, bukan ~jumlah total pesan.
  */
 export async function getInboxConversations(
   channel: InboxChannel = "SERVICE",
-  extraAccountId?: number
+  extraAccountId?: number,
+  opts?: { archived?: boolean }
 ): Promise<InboxConversation[]> {
-  const baseWhere = channel === "EXTRA" ? { channel, extraAccountId } : { channel };
+  const filter = accountFilter(channel, extraAccountId);
+  const showArchived = opts?.archived ?? false;
 
-  // PENTING: dulu ini pakai `take: 1000` diurutkan createdAt desc LINTAS SEMUA percakapan,
-  // niatnya cuma batas wajar - tapi akun yang ramai (nomor kedua, 1800+ baris) bisa punya
-  // 1000 baris terbaru itu semuanya berasal dari SATU-DUA percakapan paling aktif, sehingga
-  // percakapan lain yang jarang chat tergeser habis dari jendela dan HILANG TOTAL dari daftar
-  // walau pesannya masih ada di database (dibuktikan: 10 dari 18 percakapan akun ini hilang).
-  // `distinct: ["waJid"]` + orderBy desc membuat Prisma/MySQL ambil TEPAT satu baris (yang
-  // paling baru) PER percakapan, jadi tidak ada percakapan yang bisa tergeser oleh percakapan
-  // lain yang lebih ramai.
-  const [latestPerWaJid, latestInboundPerWaJid, requestsWithMessages] = await Promise.all([
-    prisma.inboxMessage.findMany({
-      where: baseWhere,
-      orderBy: { createdAt: "desc" },
-      distinct: ["waJid"],
-    }),
+  const [latestPerWaJid, latestInboundPerWaJid, requestsWithMessages, states] = await Promise.all([
+    prisma.$queryRaw<LatestRow[]>(Prisma.sql`
+      SELECT m.waJid AS waJid, m.waNumber AS waNumber, m.message AS message, m.direction AS direction,
+             m.createdAt AS createdAt, m.isGroup AS isGroup, m.isChannel AS isChannel,
+             m.groupName AS groupName, m.senderName AS senderName
+      FROM InboxMessage m
+      JOIN (
+        SELECT MAX(id) AS maxId FROM InboxMessage
+        WHERE channel = ${channel} ${filter}
+        GROUP BY waJid
+      ) g ON g.maxId = m.id
+    `),
     // Kueri terpisah, khusus pesan MASUK - dipakai untuk nama kontak & nomor HP yang
-    // ditampilkan (lihat komentar di bawah), yang harus berasal dari pesan masuk PALING BARU,
-    // bukan cuma "pesan apa pun paling baru" (bisa jadi balasan kita sendiri).
-    prisma.inboxMessage.findMany({
-      where: { ...baseWhere, direction: "INBOUND" },
-      orderBy: { createdAt: "desc" },
-      distinct: ["waJid"],
-      select: { waJid: true, waNumber: true, senderName: true, isGroup: true, isChannel: true },
-    }),
+    // ditampilkan, yang harus berasal dari pesan masuk PALING BARU (bukan balasan kita sendiri,
+    // yang JID-nya bisa di-mask "@lid" dengan nomor keliru).
+    prisma.$queryRaw<LatestInboundRow[]>(Prisma.sql`
+      SELECT m.waJid AS waJid, m.waNumber AS waNumber, m.senderName AS senderName,
+             m.isGroup AS isGroup, m.isChannel AS isChannel
+      FROM InboxMessage m
+      JOIN (
+        SELECT MAX(id) AS maxId FROM InboxMessage
+        WHERE channel = ${channel} ${filter} AND direction = 'INBOUND'
+        GROUP BY waJid
+      ) g ON g.maxId = m.id
+    `),
     channel === "SERVICE"
       ? prisma.request.findMany({
           where: { messages: { some: {} } },
@@ -75,7 +134,12 @@ export async function getInboxConversations(
           },
         })
       : Promise.resolve([]),
+    prisma.inboxConversationState.findMany({
+      where: { channel, extraAccountId: conversationStateAccountId(channel, extraAccountId) },
+    }),
   ]);
+
+  const stateByWaJid = new Map(states.map((s) => [s.waJid, s]));
 
   const latestByWaJid = new Map<
     string,
@@ -91,11 +155,8 @@ export async function getInboxConversations(
     }
   >();
 
-  // Nama kontak & nomor HP yang DITAMPILKAN dilacak terpisah dari "pesan terakhir" - pesan
-  // terakhir bisa saja balasan KITA (tidak punya senderName, dan kalau JID-nya di-mask
-  // WhatsApp "@lid" nomornya bisa jadi ID internal panjang, bukan nomor HP asli). Keduanya
-  // WAJIB berasal dari pesan MASUK warga yang paling baru, sudah didapat lewat kueri
-  // `latestInboundPerWaJid` (satu baris ter-INBOUND-baru per waJid).
+  // Nama kontak & nomor HP yang DITAMPILKAN dilacak terpisah dari "pesan terakhir" - keduanya
+  // WAJIB dari pesan MASUK warga paling baru (lihat komentar di atas).
   const contactNameByWaJid = new Map<string, string>();
   const bestWaNumberByWaJid = new Map<string, string>();
   for (const m of latestInboundPerWaJid) {
@@ -108,17 +169,16 @@ export async function getInboxConversations(
       waNumber: m.waNumber,
       lastMessage: m.message,
       lastDirection: m.direction,
-      lastAt: m.createdAt,
-      isGroup: m.isGroup,
-      isChannel: m.isChannel,
+      lastAt: new Date(m.createdAt),
+      isGroup: Boolean(m.isGroup),
+      isChannel: Boolean(m.isChannel),
       groupName: m.groupName,
       lastSenderName: m.senderName,
     });
   }
 
   for (const r of requestsWithMessages) {
-    // Request.waNumber sendiri (bukan cuma pesannya) juga sumber yang bisa dipercaya -
-    // diisi lewat alur intake bot yang resolusinya sudah benar sejak awal.
+    // Request.waNumber sendiri juga sumber tepercaya (diisi lewat intake bot yang resolusinya benar).
     if (!bestWaNumberByWaJid.has(r.waJid)) {
       bestWaNumberByWaJid.set(r.waJid, r.waNumber);
     }
@@ -140,24 +200,38 @@ export async function getInboxConversations(
   }
 
   const conversations: InboxConversation[] = [...latestByWaJid.entries()]
-    .map(([waJid, v]) => ({
-      waJid,
-      waNumber: bestWaNumberByWaJid.get(waJid) ?? v.waNumber,
-      lastMessage: v.lastMessage,
-      lastDirection: v.lastDirection,
-      lastAt: v.lastAt.toISOString(),
-      takeoverActive: false,
-      isGroup: v.isGroup,
-      isChannel: v.isChannel,
-      groupName: v.groupName,
-      lastSenderName: v.lastSenderName,
-      contactName: contactNameByWaJid.get(waJid) ?? null,
-    }))
-    .sort((a, b) => new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime());
+    .map(([waJid, v]) => {
+      const state = stateByWaJid.get(waJid);
+      return {
+        waJid,
+        waNumber: bestWaNumberByWaJid.get(waJid) ?? v.waNumber,
+        lastMessage: v.lastMessage,
+        lastDirection: v.lastDirection,
+        lastAt: v.lastAt.toISOString(),
+        takeoverActive: false,
+        isGroup: v.isGroup,
+        isChannel: v.isChannel,
+        groupName: v.groupName,
+        lastSenderName: v.lastSenderName,
+        contactName: contactNameByWaJid.get(waJid) ?? null,
+        pinned: Boolean(state?.pinnedAt),
+        archived: Boolean(state?.archivedAt),
+        manualUnread: Boolean(state?.manualUnreadAt),
+      };
+    })
+    // Diarsipkan disembunyikan dari daftar utama (dan sebaliknya) - persis WA, dua daftar
+    // terpisah bukan satu daftar campur dengan penanda visual saja.
+    .filter((c) => c.archived === showArchived)
+    // Dipin naik ke atas dulu (di antara sesama yang dipin tetap urut pesan terbaru), baru
+    // sisanya urut waktu seperti biasa - bukan diurutkan berdasar KAPAN di-pin (WA Web
+    // sendiri juga begitu: pin cuma menaikkan grup, bukan alat urut sendiri).
+    .sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime();
+    });
 
-  // Konsep "ambil alih" cuma berlaku untuk nomor layanan (ada bot yang bisa dialihkan
-  // dari mode otomatis) - nomor kedua tidak pernah punya balasan otomatis sama sekali,
-  // jadi selalu bisa dibalas langsung tanpa toggle apa pun.
+  // "Ambil alih" cuma berlaku untuk nomor layanan (ada bot yang bisa dialihkan dari mode
+  // otomatis) - akun ekstra tidak pernah punya balasan otomatis, jadi selalu bisa dibalas.
   if (channel !== "SERVICE") {
     return conversations.map((c) => ({ ...c, takeoverActive: true }));
   }
@@ -172,12 +246,29 @@ export async function getInboxConversations(
 }
 
 /**
- * Jumlah percakapan yang pesan terakhirnya dari warga (belum dibalas) - dasar badge
- * notifikasi di tab akun (/admin-xpawto). Dipanggil terpisah per akun (bukan sekali untuk
- * semua) supaya badge tetap muncul untuk tab yang SEDANG TIDAK dibuka - kalau cuma
- * menghitung dari daftar percakapan tab aktif, tab lain tidak akan pernah dapat badge.
+ * Jumlah percakapan yang pesan terakhirnya dari warga (belum dibalas) - dasar badge notifikasi
+ * di tab akun. Dipanggil terpisah per akun pada TIAP poll unread-counts, jadi harus murah.
+ *
+ * Untuk EXTRA (di mana bisa ada banyak akun ramai sekaligus - sumber utama masalah performa)
+ * dipakai satu kueri agregat langsung, bukan membangun ulang seluruh daftar percakapan. Untuk
+ * SERVICE (akun tunggal, plus perlu ikut memperhitungkan RequestMessage lama) tetap lewat
+ * getInboxConversations supaya semantiknya persis sama seperti sebelumnya.
  */
 export async function countNeedsReply(channel: InboxChannel, extraAccountId?: number): Promise<number> {
-  const conversations = await getInboxConversations(channel, extraAccountId);
-  return conversations.filter((c) => c.lastDirection === "INBOUND").length;
+  if (channel === "SERVICE") {
+    const conversations = await getInboxConversations(channel, extraAccountId);
+    return conversations.filter((c) => c.lastDirection === "INBOUND").length;
+  }
+
+  const rows = await prisma.$queryRaw<{ c: bigint }[]>(Prisma.sql`
+    SELECT COUNT(*) AS c
+    FROM InboxMessage m
+    JOIN (
+      SELECT MAX(id) AS maxId FROM InboxMessage
+      WHERE channel = ${channel} ${accountFilter(channel, extraAccountId)}
+      GROUP BY waJid
+    ) g ON g.maxId = m.id
+    WHERE m.direction = 'INBOUND'
+  `);
+  return Number(rows[0]?.c ?? 0);
 }

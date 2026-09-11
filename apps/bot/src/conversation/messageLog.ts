@@ -187,7 +187,8 @@ export async function logInboxMessage(
   waMessageId?: string,
   coords?: LocationCoords,
   isForwarded?: boolean,
-  quoted?: QuotedInfo
+  quoted?: QuotedInfo,
+  createdAt?: Date
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -215,6 +216,7 @@ export async function logInboxMessage(
     isForwarded: isForwarded ?? false,
     quotedWaMessageId: quoted?.waMessageId,
     quotedPreview: quoted?.preview,
+    createdAt,
   });
 }
 
@@ -235,7 +237,8 @@ export async function logOutboundFromDevice(
   waMessageId?: string,
   coords?: LocationCoords,
   isForwarded?: boolean,
-  quoted?: QuotedInfo
+  quoted?: QuotedInfo,
+  createdAt?: Date
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -263,6 +266,7 @@ export async function logOutboundFromDevice(
     isForwarded: isForwarded ?? false,
     quotedWaMessageId: quoted?.waMessageId,
     quotedPreview: quoted?.preview,
+    createdAt,
   });
 }
 
@@ -456,10 +460,18 @@ export async function logInboxCallEvent(
   extraAccountId?: number,
   group?: { isGroup: boolean; groupName: string }
 ): Promise<void> {
+  // Pemanggil mengisi waNumber dari `jid.split("@")[0]`, tapi kalau JID-nya di-mask WhatsApp
+  // ("@lid", fitur privasi) itu ID INTERNAL yang panjang - bukan nomor HP asli. Sama seperti
+  // pesan biasa (extractWaNumber/resolveWaNumberForOutbound), resolusi ke nomor yang sudah
+  // pernah terbukti benar dari histori percakapan, supaya Riwayat Panggilan tidak menampilkan
+  // angka LID yang tidak masuk akal. Untuk penelepon yang belum pernah chat sama sekali (tidak
+  // ada histori), terpaksa jatuh ke waNumber apa adanya - tidak ada sumber lain yang bisa
+  // dipercaya di titik ini.
+  const resolvedNumber = waJid.endsWith("@lid") ? (await resolveKnownWaNumber(waJid)) ?? waNumber : waNumber;
   const label = isVideo ? "Panggilan video" : "Panggilan suara";
   await createLedgeredInboxMessage({
     waJid,
-    waNumber,
+    waNumber: resolvedNumber,
     channel,
     extraAccountId,
     direction: "INBOUND",
@@ -474,7 +486,7 @@ export async function logInboxCallEvent(
     await prisma.callLog.create({
       data: {
         waJid,
-        waNumber,
+        waNumber: resolvedNumber,
         channel,
         extraAccountId,
         isVideo,

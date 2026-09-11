@@ -1,9 +1,30 @@
 import type { InboxChannel } from "@kelurahan/db";
+import type { WAMessage } from "@whiskeysockets/baileys";
 import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
 import { getExtraAccountSocket } from "../wa/extraAccountManager";
 import { humanSendMessage } from "../wa/humanSend";
 import { notifyTelegramChatEvent } from "./telegramNotify";
+
+export interface QuotedReplyInfo {
+  waMessageId: string;
+  fromMe: boolean;
+  text: string;
+}
+
+/**
+ * Baileys minta objek WAMessage (key + message) buat merangkai kutipan "reply" di WA
+ * asli - kita cuma pegang waMessageId/teks/arah dari InboxMessage yang tersimpan di DB
+ * (bukan WAMessage utuh, itu cuma ada di memori proses ini selagi live). Stub minimal ini
+ * cukup untuk Baileys membangun contextInfo.quotedMessage yang benar (WA cuma butuh
+ * key+teksnya buat menampilkan potongan kutipan, bukan seluruh struktur pesan asli).
+ */
+function buildQuotedStub(waJid: string, quoted: QuotedReplyInfo): WAMessage {
+  return {
+    key: { remoteJid: waJid, id: quoted.waMessageId, fromMe: quoted.fromMe },
+    message: { conversation: quoted.text },
+  } as WAMessage;
+}
 
 /**
  * Balasan bebas dari petugas lewat halaman "Pesan Masuk" - beda dari sendCustomMessage
@@ -16,7 +37,8 @@ export async function sendInboxReply(
   waJid: string,
   message: string,
   channel: InboxChannel = "SERVICE",
-  extraAccountId?: number
+  extraAccountId?: number,
+  quoted?: QuotedReplyInfo
 ): Promise<string | undefined> {
   const sock = channel === "EXTRA" && extraAccountId ? getExtraAccountSocket(extraAccountId) : getSocket();
   if (!sock) {
@@ -25,7 +47,12 @@ export async function sendInboxReply(
   // ID pesan ini sudah otomatis ditandai di sentMessageTracker oleh humanSendMessage
   // sendiri (sebelum dikirim) - lihat wa/humanSend.ts - supaya echo "fromMe"-nya tidak
   // ikut dicatat dobel oleh messageHandler/extraAccountMessageHandler.
-  const sent = await humanSendMessage(sock, waJid, { text: message });
+  const sent = await humanSendMessage(
+    sock,
+    waJid,
+    { text: message },
+    quoted ? buildQuotedStub(waJid, quoted) : undefined
+  );
   logger.info({ waJid, channel, extraAccountId }, "Balasan kotak masuk terkirim ke warga");
 
   // Notifikasi Telegram (permintaan pemilik) - balasan dashboard TIDAK PERNAH lewat alur

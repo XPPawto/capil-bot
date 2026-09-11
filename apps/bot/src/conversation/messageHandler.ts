@@ -1,5 +1,5 @@
 import { extractMessageContent, getContentType, proto, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
-import type { InboxChannel } from "@kelurahan/db";
+import { prisma, type InboxChannel } from "@kelurahan/db";
 import { logger } from "../logger";
 import { handleConversationMessage } from "./handler";
 import { runExclusive } from "./mutex";
@@ -27,6 +27,16 @@ import { wasSentByDashboard } from "../wa/sentMessageTracker";
 interface MessagesUpsertPayload {
   messages: WAMessage[];
   type: string;
+}
+
+/** Dipakai bersama oleh handleServiceHistorySync di sini & handleExtraAccountHistorySync di
+ * extraAccountMessageHandler.ts - messageTimestamp dari Baileys bisa berupa Long (protobufjs)
+ * ataupun number biasa tergantung environment, wajib dicek dulu sebelum dikalikan 1000. */
+export function historyMessageTimestamp(msg: WAMessage): Date | undefined {
+  const ts = msg.messageTimestamp;
+  if (ts === null || ts === undefined) return undefined;
+  const seconds = typeof ts === "number" ? ts : ts.toNumber();
+  return new Date(seconds * 1000);
 }
 
 /**
@@ -612,6 +622,87 @@ export async function handleIncomingMessages(sock: WASocket, payload: MessagesUp
       await runExclusive(jid, () => handleConversationMessage(sock, jid, waNumber, text, msg));
     } catch (err) {
       logger.error({ err, jid }, "Gagal menangani pesan warga");
+    }
+  }
+}
+
+/**
+ * Dipanggil dari event `messaging-history.set` Baileys (lihat wa/socket.ts,
+ * `syncFullHistory: true`) - sama seperti handleExtraAccountHistorySync di
+ * extraAccountMessageHandler.ts, cuma untuk nomor layanan (channel SERVICE, tanpa
+ * extraAccountId). WhatsApp cuma mengirim event ini SEKALI ke device yang BARU PERTAMA KALI
+ * ditautkan (scan QR/pairing baru nomor bot), bukan retroaktif untuk sesi yang sudah tertaut.
+ *
+ * SENGAJA TIDAK memanggil handleConversationMessage/alur bot sama sekali - pesan-pesan ini
+ * sudah lama terjadi, memprosesnya lewat state machine formulir/menu bot bisa memicu balasan
+ * otomatis yang tidak masuk akal (mis. bot "menjawab" pertanyaan warga dari bulan lalu) atau
+ * merusak ConversationState warga yang sedang aktif mengisi formulir SEKARANG. Fungsi ini
+ * murni mencatat riwayatnya ke Pesan Masuk untuk visibilitas petugas, persis seperti versi
+ * akun ekstra.
+ */
+export async function handleServiceHistorySync(sock: WASocket, payload: { messages: WAMessage[] }): Promise<void> {
+  for (const msg of payload.messages) {
+    const jid = msg.key.remoteJid;
+    if (!jid) continue;
+    if (jid === "status@broadcast" || jid.endsWith("@broadcast")) continue;
+    if (!msg.message) continue;
+    if (msg.messageStubType) continue;
+    if (msg.message.protocolMessage || msg.message.reactionMessage) continue;
+
+    const waMessageId = msg.key.id ?? undefined;
+    if (waMessageId) {
+      const already = await prisma.inboxMessage.findFirst({
+        where: { waJid: jid, waMessageId, channel: "SERVICE" },
+        select: { id: true },
+      });
+      if (already) continue;
+    }
+
+    const isFromMe = Boolean(msg.key.fromMe);
+    const isGroup = jid.endsWith("@g.us");
+    const isChannel = jid.endsWith("@newsletter");
+    if (isChannel && isFromMe) continue;
+
+    const text = extractInboxText(msg);
+    const createdAt = historyMessageTimestamp(msg);
+
+    let waNumber: string;
+    let group: GroupMeta | undefined;
+    if (isGroup) {
+      const senderNumber = isFromMe ? undefined : extractParticipantNumber(msg);
+      waNumber = senderNumber ?? jid.split("@")[0];
+      group = {
+        isGroup: true,
+        groupName: await getGroupName(sock, jid),
+        senderNumber,
+        senderName: isFromMe ? undefined : (msg.pushName ?? undefined),
+      };
+    } else if (isChannel) {
+      waNumber = jid.split("@")[0];
+      group = { isGroup: false, isChannel: true, groupName: await getChannelName(sock, jid) };
+    } else {
+      waNumber = isFromMe ? await resolveWaNumberForOutbound(sock, jid) : extractWaNumber(msg, jid);
+      if (!isFromMe && msg.pushName) {
+        group = { isGroup: false, senderName: msg.pushName };
+      }
+    }
+
+    const direction: "INBOUND" | "OUTBOUND" = isFromMe ? "OUTBOUND" : "INBOUND";
+
+    try {
+      if (text) {
+        const coords = extractLocationCoords(msg);
+        const isForwarded = extractIsForwarded(msg);
+        const quoted = extractQuotedInfo(msg);
+        if (isFromMe) {
+          await logOutboundFromDevice(jid, waNumber, text, "SERVICE", group, undefined, waMessageId, coords, isForwarded, quoted, createdAt);
+        } else {
+          await logInboxMessage(jid, waNumber, text, "SERVICE", group, undefined, waMessageId, coords, isForwarded, quoted, createdAt);
+        }
+      }
+      await logInboxMediaIfPresent(sock, msg, jid, waNumber, "SERVICE", group, direction, undefined, createdAt);
+    } catch (err) {
+      logger.error({ err, jid }, "Gagal mencatat pesan histori ke kotak masuk");
     }
   }
 }

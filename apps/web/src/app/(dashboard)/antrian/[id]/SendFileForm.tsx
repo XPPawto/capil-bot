@@ -59,7 +59,7 @@ export function SendFileForm({ requestId }: { requestId: string }) {
           type="button"
           onClick={handleSend}
           disabled={!file || sending}
-          className="shrink-0 rounded-md bg-ink px-4 py-2 text-sm font-medium text-canvas transition-colors hover:opacity-90 disabled:opacity-50"
+          className="shrink-0 rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-ink transition-colors hover:bg-brand-hover disabled:opacity-50"
         >
           {sending ? "Mengirim..." : "Kirim"}
         </button>

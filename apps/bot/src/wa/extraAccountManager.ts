@@ -12,7 +12,7 @@ import { prisma } from "@kelurahan/db";
 import { config } from "../config";
 import { logger } from "../logger";
 import type { ConnectMode } from "./socket";
-import { handleExtraAccountIncomingMessages } from "../conversation/extraAccountMessageHandler";
+import { handleExtraAccountIncomingMessages, handleExtraAccountHistorySync } from "../conversation/extraAccountMessageHandler";
 import { handleMessageStatusUpdates } from "../conversation/messageHandler";
 import { handleExtraAccountCalls } from "../conversation/extraAccountCallHandler";
 import { registerPresenceListener } from "./presenceTracker";
@@ -108,7 +108,11 @@ export async function startExtraAccountSocket(accountId: number, mode: ConnectMo
       auth: state,
       logger: logger.child({ module: "baileys-extra", accountId }) as any,
       printQRInTerminal: false,
-      syncFullHistory: false,
+      // true KHUSUS akun ekstra (beda dari nomor layanan di wa/socket.ts) - supaya begitu
+      // akun ekstra discan/di-pairing BARU, riwayat chat yang WhatsApp kirim ikut tercatat
+      // ke Pesan Masuk lewat messaging-history.set (lihat handleExtraAccountHistorySync).
+      // Cuma berlaku untuk pairing baru - tidak retroaktif untuk sesi yang sudah tertaut.
+      syncFullHistory: true,
       browser: Browsers.ubuntu("Chrome"),
     });
 
@@ -171,6 +175,14 @@ export async function startExtraAccountSocket(accountId: number, mode: ConnectMo
           );
         }, delay);
       }
+    });
+
+    sock.ev.on("messaging-history.set", ({ messages, isLatest, progress }) => {
+      handleExtraAccountHistorySync(sock, { messages }, accountId)
+        .then(() => {
+          if (isLatest) logger.info({ accountId }, "Sinkronisasi riwayat chat akun ekstra selesai.");
+        })
+        .catch((err) => logger.error({ err, accountId, progress }, "Gagal memproses sinkronisasi riwayat akun ekstra"));
     });
 
     sock.ev.on("messages.upsert", (payload) => {

@@ -363,12 +363,86 @@ model InboxMessage {
   // sedang dimuat atau (secara teori) sudah tidak ada lagi di database.
   quotedWaMessageId  String?
   quotedPreview      String?
+  // "Pesan Berbintang" ala WA - ditandai manual oleh petugas lewat menu klik-kanan, murni
+  // penanda pribadi dashboard ini (tidak pernah dikirim/tersinkron ke WhatsApp - WA sendiri
+  // menyimpan starred per akun secara lokal di HP, bukan lewat protokol pesan).
+  starredAt          DateTime?
 
-  @@index([waJid])
-  @@index([channel])
   @@index([extraAccountId])
   @@index([waMessageId])
   @@index([createdAt])
+  // Komposit untuk kueri "satu pesan terakhir per percakapan" (lib/inbox.ts getInboxConversations
+  // & countNeedsReply): GROUP BY waJid dalam satu channel/akun lalu ambil MAX(id). Menggantikan
+  // @@index([channel]) & @@index([waJid]) yang jadi prefix-nya (redundan). Tanpa index ini, akun
+  // ramai (ribuan pesan) memaksa full scan tiap poll daftar/badge - inti masalah "loading lama".
+  @@index([channel, extraAccountId, waJid, id])
+  // Varian dengan `direction` untuk badge "belum dibalas" (countNeedsReply) yang menyaring INBOUND.
+  @@index([channel, extraAccountId, direction, waJid, id])
+  // Untuk memuat isi satu thread (api/inbox/[waJid]/messages): filter waJid+channel+akun urut createdAt.
+  @@index([waJid, channel, extraAccountId, createdAt])
+  // Untuk halaman "Pesan Berbintang": filter channel+akun lalu saring starredAt IS NOT NULL.
+  @@index([channel, extraAccountId, starredAt])
+}
+
+/// Status per-percakapan Pesan Masuk yang dikontrol admin dari dashboard (pin/arsip/
+/// tandai belum dibaca) - fitur WA Web asli yang sebelumnya tidak ada tempat
+/// penyimpanannya sama sekali, karena tidak ada satu pun tabel yang merepresentasikan
+/// "satu percakapan" - selama ini daftar percakapan cuma diturunkan on-the-fly dari
+/// GROUP BY InboxMessage.waJid (lihat lib/inbox.ts getInboxConversations). NAMA SENGAJA
+/// "InboxConversationState", bukan "ConversationState" - nama itu sudah dipakai model lain
+/// di atas (state mesin alur formulir bot, konsep yang sama sekali berbeda). `extraAccountId`
+/// sentinel 0 (bukan nullable) sama seperti ContactAvatar di atas - MySQL tidak
+/// menganggap NULL sama dengan NULL lain di dalam unique index gabungan, jadi kalau
+/// dibiarkan nullable, channel SERVICE (yang selalu tanpa akun ekstra) bisa kebobolan
+/// baris dobel per waJid alih-alih benar-benar unik.
+model InboxConversationState {
+  id             Int          @id @default(autoincrement())
+  waJid          String
+  channel        InboxChannel
+  extraAccountId Int          @default(0)
+  /// null = tidak dipin. Diisi waktu di-pin (bukan Boolean polos) supaya kalau nanti
+  /// jumlah yang dipin dibatasi (mis. maks 3 seperti WA), ada urutan "yang paling lama
+  /// dipin dilepas duluan" - bukan urutan array yang tidak stabil.
+  pinnedAt       DateTime?
+  archivedAt     DateTime?
+  /// Ditandai manual lewat menu klik-kanan percakapan ("Tandai belum dibaca") - beda dari
+  /// status "belum dibalas" yang sudah ada (countNeedsReply di lib/inbox.ts, itu dihitung
+  /// dari arah pesan TERAKHIR, bukan flag manual ini). Dibersihkan otomatis begitu admin
+  /// membuka percakapan itu lagi (lihat POST .../messages GET thread di route.ts).
+  manualUnreadAt DateTime?
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([waJid, channel, extraAccountId])
+}
+
+/// Status/Story WA yang masuk lewat akun ekstra - lihat wa/extraAccountManager.ts &
+/// conversation/statusHandler.ts. Cuma dicatat PASIF (diunduh & disimpan diam-diam, TIDAK
+/// PERNAH mengirim tanda "sudah dilihat" balik ke pemiliknya - kode di sini sengaja tidak
+/// pernah memanggil sock.readMessages/kirim receipt apa pun untuk status@broadcast) -
+/// dipilih begitu supaya warga tidak melihat "dilihat oleh [nomor akun kelurahan]" di
+/// riwayat story mereka sendiri, yang bisa terkesan aneh/mengganggu untuk akun layanan
+/// publik. Status kedaluwarsa 24 jam persis WA asli - baris LAMA TETAP disimpan (bukan
+/// dihapus) untuk jejak, tapi query dashboard menyaring `postedAt` dalam 24 jam terakhir.
+model ContactStatusUpdate {
+  id                 Int          @id @default(autoincrement())
+  /// JID pemilik status (bukan "status@broadcast" itu sendiri - itu cuma alamat broadcast
+  /// listnya, pemilik aslinya ada di key.participant pesan yang diterima).
+  waJid              String
+  waNumber           String
+  channel            InboxChannel
+  extraAccountId     Int          @default(0)
+  /// "text" | "image" | "video" - status teks polos (warna latar WA sendiri tidak
+  /// disimpan, cuma teksnya) atau media dengan caption opsional.
+  contentType        String
+  text               String?      @db.Text
+  attachmentPath     String?
+  attachmentMimeType String?
+  /// Waktu status ASLI diposting (messageTimestamp pesan WA) - dipakai jendela 24 jam,
+  /// bukan createdAt (waktu kita menyimpannya, bisa beda kalau ada jeda pemrosesan).
+  postedAt           DateTime
+  createdAt          DateTime     @default(now())
+
+  @@index([channel, extraAccountId, waJid, postedAt])
 }
 
 /// Reaksi emoji (👍❤️😂 dst) ke satu pesan - satu baris per (pesan, pereaksi), APPEND/UPDATE

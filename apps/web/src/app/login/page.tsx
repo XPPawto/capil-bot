@@ -52,7 +52,7 @@ export default async function LoginPage({
             </div>
             <button
               type="submit"
-              className="mt-2 rounded-md bg-ink px-3 py-2.5 text-sm font-medium text-canvas transition-colors hover:opacity-90 active:scale-[0.98]"
+              className="mt-2 rounded-md bg-brand px-3 py-2.5 text-sm font-medium text-brand-ink transition-colors hover:bg-brand-hover active:scale-[0.98]"
             >
               Masuk
             </button>

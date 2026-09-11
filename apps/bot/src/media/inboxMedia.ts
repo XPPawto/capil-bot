@@ -125,7 +125,8 @@ export async function logInboxMediaIfPresent(
   channel: InboxChannel = "SERVICE",
   group?: GroupMeta,
   direction: "INBOUND" | "OUTBOUND" = "INBOUND",
-  extraAccountId?: number
+  extraAccountId?: number,
+  createdAt?: Date
 ): Promise<void> {
   const raw = msg.message;
   const m = extractMessageContent(raw ?? undefined) ?? raw;
@@ -191,6 +192,7 @@ export async function logInboxMediaIfPresent(
           groupName: group?.groupName,
           senderNumber: group?.senderNumber,
           senderName: group?.senderName,
+          createdAt,
         },
         null
       );
@@ -270,6 +272,7 @@ export async function logInboxMediaIfPresent(
         groupName: group?.groupName,
         senderNumber: group?.senderNumber,
         senderName: group?.senderName,
+        createdAt,
       },
       attachmentSha256
     );

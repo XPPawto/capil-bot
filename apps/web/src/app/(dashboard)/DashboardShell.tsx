@@ -103,7 +103,7 @@ export function DashboardShell({ adminName, children }: { adminName: string; chi
                 href={item.href}
                 className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
                   active
-                    ? "bg-pastel-blue font-medium text-pastel-blue-ink"
+                    ? "bg-pastel-green font-medium text-pastel-green-ink"
                     : "text-ink-muted hover:bg-surface-hover hover:text-ink"
                 }`}
               >
@@ -116,7 +116,7 @@ export function DashboardShell({ adminName, children }: { adminName: string; chi
 
         <div className="border-t border-line pt-3">
           <div className="mb-2 flex items-center gap-2 px-1">
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-pastel-blue text-xs font-semibold text-pastel-blue-ink">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-semibold text-brand-ink">
               {adminName.slice(0, 1).toUpperCase()}
             </span>
             <p className="truncate text-xs text-ink-muted">{adminName}</p>

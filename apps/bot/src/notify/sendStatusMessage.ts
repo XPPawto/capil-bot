@@ -1,13 +1,10 @@
 import QRCode from "qrcode";
-import { customAlphabet } from "nanoid";
 import { prisma } from "@kelurahan/db";
 import { serviceLabel } from "../conversation/menu";
 import { logger } from "../logger";
 import { getSocket } from "../wa/socket";
 import { humanSendMessage } from "../wa/humanSend";
 import { estimateProcessingMinutes, formatEstimatedWait } from "./estimateWaitTime";
-
-const pickupTokenAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 10);
 
 /**
  * Dipanggil baik oleh control server (fast path, saat admin ubah status)
@@ -27,13 +24,11 @@ export async function sendStatusMessage(requestId: string): Promise<void> {
   const label = serviceLabel(req.serviceType);
 
   if (req.status === "DIPROSES") {
-    // Regenerasi token tiap kali masuk DIPROSES supaya QR lama (mis. screenshot) tidak berlaku lagi.
-    const pickupToken = pickupTokenAlphabet();
-    await prisma.request.update({
-      where: { id: req.id },
-      data: { pickupToken, pickupTokenUsedAt: null, qrGeneratedAt: new Date() },
-    });
-    const qrBuffer = await QRCode.toBuffer(pickupToken, { margin: 1, width: 400 });
+    // Token QR sudah digenerate SEKALI saat transisi status di dashboard (api/requests/[id]/
+    // status) - dipakai apa adanya di sini, TIDAK diregenerasi. Fungsi ini bisa dipanggil
+    // ulang oleh reconciler; regenerasi di titik ini dulu membuat QR yang sudah dipegang warga
+    // mendadak tidak valid pada retry. Sekarang pengiriman ulang mengirim QR yang sama persis.
+    const qrBuffer = await QRCode.toBuffer(req.pickupToken, { margin: 1, width: 400 });
 
     const estimateMinutes = await estimateProcessingMinutes(req.serviceType).catch(() => null);
     const estimateText =

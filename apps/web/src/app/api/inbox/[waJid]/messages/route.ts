@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireVerifiedAdmin } from "@/lib/accessControl";
 import { sendInboxReply } from "@/lib/botClient";
+import { upsertConversationState } from "@/lib/inbox";
 import { prisma } from "@/lib/prisma";
 import { appendLedgerEntry } from "@kelurahan/db";
 import type { InboxChannel } from "@prisma/client";
@@ -31,11 +32,18 @@ interface ThreadMessage {
   isForwarded: boolean;
   quotedWaMessageId: string | null;
   quotedPreview: string | null;
+  starredAt: string | null;
 }
 
 function channelFrom(value: string | null): InboxChannel {
   return value === "EXTRA" ? "EXTRA" : "SERVICE";
 }
+
+// ponytail: window sederhana, bukan infinite-scroll penuh - cukup untuk membuang beban
+// render ribuan bubble pesan lama (lihat wa/extraAccountManager.ts syncFullHistory) tanpa
+// mengubah cara kerja polling pesan baru (?since= tetap tidak dibatasi). Upgrade ke
+// "muat pesan lebih lama" (cursor `before=`) kalau nanti percakapan >200 pesan perlu discroll ke atas.
+const INITIAL_MESSAGE_WINDOW = 200;
 
 /**
  * Dipoll berkala oleh halaman Pesan Masuk. Untuk channel SERVICE, menggabungkan dua sumber:
@@ -61,6 +69,12 @@ export async function GET(
   const extraAccountIdParam = req.nextUrl.searchParams.get("extraAccountId");
   const extraAccountId = extraAccountIdParam ? Number(extraAccountIdParam) : undefined;
 
+  // Buka percakapan (bukan poll pesan baru berkala) = otomatis bersihkan tanda "belum
+  // dibaca" manual, persis WA Web - best-effort, tidak boleh menggagalkan pemuatan thread.
+  if (!sinceDate) {
+    upsertConversationState(decodedWaJid, channel, extraAccountId, { manualUnreadAt: null }).catch(() => undefined);
+  }
+
   const [inboxRows, requestRows] = await Promise.all([
     prisma.inboxMessage.findMany({
       where: {
@@ -69,7 +83,12 @@ export async function GET(
         ...(channel === "EXTRA" ? { extraAccountId } : {}),
         ...(sinceDate ? { createdAt: { gt: sinceDate } } : {}),
       },
-      orderBy: { createdAt: "asc" },
+      // Tanpa `since` (buka percakapan pertama kali) - ambil TERBARU saja, dibatasi
+      // INITIAL_MESSAGE_WINDOW, bukan seluruh histori (bisa ribuan baris untuk akun yang
+      // sudah pernah history-sync). Polling pesan baru lewat `since` tetap tidak dibatasi -
+      // itu wajar cuma beberapa baris per siklus poll.
+      orderBy: { createdAt: sinceDate ? "asc" : "desc" },
+      take: sinceDate ? undefined : INITIAL_MESSAGE_WINDOW,
       include: { admin: true },
     }),
     channel === "SERVICE"
@@ -78,7 +97,8 @@ export async function GET(
             request: { waJid: decodedWaJid },
             ...(sinceDate ? { createdAt: { gt: sinceDate } } : {}),
           },
-          orderBy: { createdAt: "asc" },
+          orderBy: { createdAt: sinceDate ? "asc" : "desc" },
+          take: sinceDate ? undefined : INITIAL_MESSAGE_WINDOW,
           include: { admin: true },
         })
       : Promise.resolve([]),
@@ -120,6 +140,7 @@ export async function GET(
       isForwarded: m.isForwarded,
       quotedWaMessageId: m.quotedWaMessageId ?? null,
       quotedPreview: m.quotedPreview ?? null,
+      starredAt: m.starredAt ? m.starredAt.toISOString() : null,
     })),
     ...requestRows.map((m) => ({
       id: `r${m.id}`,
@@ -141,6 +162,7 @@ export async function GET(
       isForwarded: false,
       quotedWaMessageId: null,
       quotedPreview: null,
+      starredAt: null,
     })),
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
@@ -160,6 +182,9 @@ export async function POST(
   const message = typeof body?.message === "string" ? body.message.trim() : "";
   const channel = channelFrom(typeof body?.channel === "string" ? body.channel : null);
   const extraAccountId = body?.extraAccountId ? Number(body.extraAccountId) : undefined;
+  const quotedWaMessageId = typeof body?.quotedWaMessageId === "string" ? body.quotedWaMessageId : undefined;
+  const quotedPreview = typeof body?.quotedPreview === "string" ? body.quotedPreview : undefined;
+  const quotedFromMe = Boolean(body?.quotedFromMe);
   if (!message) {
     return NextResponse.json({ error: "empty_message" }, { status: 400 });
   }
@@ -198,7 +223,13 @@ export async function POST(
   // Kirim dulu, baru catat - urutan ini juga dipakai ../send-file/route.ts. Selain lebih
   // konsisten, ini butuh ID pesan WA hasil pengiriman (waMessageId) supaya messages.update
   // (status centang) nanti bisa menemukan baris yang tepat untuk diperbarui.
-  const sent = await sendInboxReply(decodedWaJid, message, channel, extraAccountId);
+  const sent = await sendInboxReply(
+    decodedWaJid,
+    message,
+    channel,
+    extraAccountId,
+    quotedWaMessageId ? { waMessageId: quotedWaMessageId, fromMe: quotedFromMe, text: quotedPreview ?? "" } : undefined
+  );
   if (!sent.ok) {
     return NextResponse.json({ error: "send_failed" }, { status: 502 });
   }
@@ -214,6 +245,8 @@ export async function POST(
       adminId: guard.admin.id,
       waMessageId: sent.waMessageId,
       status: sent.waMessageId ? "SENT" : undefined,
+      quotedWaMessageId,
+      quotedPreview,
     },
   });
 
@@ -238,6 +271,8 @@ export async function POST(
       adminId: row.adminId,
       waMessageId: row.waMessageId,
       createdAt: row.createdAt.toISOString(),
+      quotedWaMessageId: row.quotedWaMessageId,
+      quotedPreview: row.quotedPreview,
     });
   } catch (err) {
     console.error("GAGAL menulis jejak audit ledger untuk balasan dashboard", err);

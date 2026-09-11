@@ -1,21 +1,40 @@
 @import "tailwindcss";
 
+/*
+ * Sistem desain: terang + hijau ala WhatsApp Web. SEMUA halaman menarik warna dari token di
+ * sini (bg-canvas/surface/ink/pastel-*), jadi mengubah nilai token = mengganti tema seluruh
+ * dashboard sekaligus. Nilai-nilai ini meniru palet WhatsApp Web resmi:
+ *   canvas  = latar abu terang aplikasi (#f0f2f5)
+ *   surface = putih kartu/panel + bubble pesan masuk
+ *   brand   = hijau-teal WA (#00a884) untuk aksi utama (tombol kirim, aksen aktif)
+ *   pastel-green = bubble pesan KELUAR (#d9fdd3, hijau muda khas WA)
+ */
 @theme {
-  --color-canvas: #151412;
-  --color-surface: #1d1c19;
-  --color-surface-hover: #27251f;
-  --color-line: #38352f;
-  --color-ink: #f3f1ec;
-  --color-ink-muted: #a19c92;
+  --color-canvas: #f0f2f5;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f5f6f6;
+  --color-line: #e9edef;
+  --color-ink: #111b21;
+  --color-ink-muted: #667781;
+  /* Dipakai ~30x di InboxClient tapi dulu TIDAK pernah didefinisikan (jatuh ke inherit) -
+     sekarang jadi warna tersier sungguhan (timestamp, ikon redup, placeholder). */
+  --color-ink-faint: #8696a0;
 
-  --color-pastel-red: #3a221f;
-  --color-pastel-red-ink: #f0a099;
-  --color-pastel-blue: #1c2c38;
-  --color-pastel-blue-ink: #7ec2ef;
-  --color-pastel-green: #1e2e21;
-  --color-pastel-green-ink: #8ccc9b;
-  --color-pastel-yellow: #362c14;
-  --color-pastel-yellow-ink: #e3bd66;
+  /* Aksen merek WA - tombol kirim, status aktif, tautan aksi utama. */
+  --color-brand: #00a884;
+  --color-brand-ink: #ffffff;
+  --color-brand-hover: #017561;
+
+  /* Pasangan tint status: latar muda + tinta yang cukup gelap agar tetap terbaca. Dipakai
+     badge status (Dicek/Diproses/Ditolak/Selesai), bubble keluar, centang, pesan error. */
+  --color-pastel-red: #fde4e1;
+  --color-pastel-red-ink: #c0392b;
+  --color-pastel-blue: #e7f3fb;
+  --color-pastel-blue-ink: #1c7dd4;
+  --color-pastel-green: #d9fdd3;
+  --color-pastel-green-ink: #0b7a4b;
+  --color-pastel-yellow: #fff3d6;
+  --color-pastel-yellow-ink: #9a6a00;
 
   --font-sans: var(--font-ui), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-serif: var(--font-heading), ui-serif, Georgia, serif;
@@ -27,7 +46,7 @@
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
@@ -39,6 +58,30 @@ body {
 }
 
 ::selection {
-  background: var(--color-pastel-blue);
-  color: var(--color-pastel-blue-ink);
+  background: var(--color-pastel-green);
+  color: var(--color-pastel-green-ink);
+}
+
+/*
+ * Wallpaper area chat WhatsApp: beige lembut + doodle SVG samar yang di-tile. Dipakai di panel
+ * thread pesan (bukan bg-canvas polos) supaya terasa persis WhatsApp Web. SVG di-inline sebagai
+ * data URI (tidak ada permintaan jaringan tambahan).
+ */
+.chat-wallpaper {
+  background-color: #efeae2;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72' viewBox='0 0 72 72'%3E%3Cg fill='none' stroke='%23000000' stroke-opacity='0.03' stroke-width='2'%3E%3Ccircle cx='16' cy='16' r='7'/%3E%3Cpath d='M48 10l9 9M57 10l-9 9'/%3E%3Cpath d='M10 52q7-9 14 0'/%3E%3Crect x='46' y='46' width='14' height='11' rx='2'/%3E%3Cpath d='M50 40v-8h10'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: repeat;
+}
+
+/* Scrollbar tipis ala WhatsApp Web (hanya muncul di area yang di-scroll). */
+.thin-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 999px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }

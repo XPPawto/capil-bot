@@ -259,3 +259,59 @@ export function IconCallMissed({ className = base }: IconProps) {
     </svg>
   );
 }
+
+export function IconReply({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M9 17l-5-5 5-5" />
+      <path d="M4 12h10a6 6 0 0 1 6 6v1" />
+    </svg>
+  );
+}
+
+export function IconCopy({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect x="9" y="9" width="11" height="11" rx="1.5" />
+      <path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" />
+    </svg>
+  );
+}
+
+export function IconArchive({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect x="3.5" y="4.5" width="17" height="4.5" rx="1.2" />
+      <path d="M5 9v8.5A1.5 1.5 0 0 0 6.5 19h11a1.5 1.5 0 0 0 1.5-1.5V9" />
+      <path d="M10 13h4" />
+    </svg>
+  );
+}
+
+export function IconPin({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M9.5 4.5h5l.7 5.2 2.3 2.1v2h-5.2V19l-.8 2-.8-2v-5.2H5.5v-2l2.3-2.1z" />
+    </svg>
+  );
+}
+
+export function IconEyeOff({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M3 3l18 18" />
+      <path d="M10.6 5.2A10.4 10.4 0 0 1 12 5c5 0 9 4 10 7-.4 1.2-1.3 2.7-2.6 4M6.6 6.6C4.4 8 2.9 9.9 2 12c1 3 5 7 10 7 1.4 0 2.7-.3 3.9-.8" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </svg>
+  );
+}
+
+export function IconSmile({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M8.5 14s1.2 2 3.5 2 3.5-2 3.5-2" />
+      <path d="M9 9.5h.01M15 9.5h.01" />
+    </svg>
+  );
+}

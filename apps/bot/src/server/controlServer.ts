@@ -10,6 +10,7 @@ import { sendTakeoverNotice } from "../notify/sendTakeoverNotice";
 import { sendFileToResident } from "../notify/sendFileToResident";
 import { sendInboxReply } from "../notify/sendInboxReply";
 import { sendInboxFile } from "../notify/sendInboxFile";
+import { sendInboxReaction } from "../notify/sendInboxReaction";
 import { fetchAndCacheAvatar } from "../media/avatarFetch";
 import { getPresence, subscribePresenceOnce } from "../wa/presenceTracker";
 import { runBroadcast } from "../notify/broadcast";
@@ -270,15 +271,40 @@ export function startControlServer(): void {
     const message = String(req.body?.message ?? "");
     const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
     const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
+    const quotedWaMessageId = req.body?.quotedWaMessageId ? String(req.body.quotedWaMessageId) : undefined;
+    const quoted = quotedWaMessageId
+      ? { waMessageId: quotedWaMessageId, fromMe: Boolean(req.body?.quotedFromMe), text: String(req.body?.quotedText ?? "") }
+      : undefined;
     if (!waJid || !message.trim()) {
       res.status(400).json({ error: "missing_fields" });
       return;
     }
     try {
-      const waMessageId = await sendInboxReply(waJid, message, channel, extraAccountId);
+      const waMessageId = await sendInboxReply(waJid, message, channel, extraAccountId, quoted);
       res.json({ ok: true, waMessageId: waMessageId ?? null });
     } catch (err) {
       logger.error({ err, waJid }, "Gagal mengirim balasan kotak masuk ke warga");
+      res.status(502).json({ error: "send_failed" });
+    }
+  });
+
+  app.post("/notify/inbox-reaction", async (req, res) => {
+    const waJid = String(req.body?.waJid ?? "");
+    const waMessageId = String(req.body?.waMessageId ?? "");
+    const fromMe = Boolean(req.body?.fromMe);
+    const participant = req.body?.participant ? String(req.body.participant) : undefined;
+    const emoji = typeof req.body?.emoji === "string" ? req.body.emoji : "";
+    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
+    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
+    if (!waJid || !waMessageId) {
+      res.status(400).json({ error: "missing_fields" });
+      return;
+    }
+    try {
+      await sendInboxReaction(waJid, { remoteJid: waJid, id: waMessageId, fromMe, participant }, emoji, channel, extraAccountId);
+      res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err, waJid }, "Gagal mengirim reaksi kotak masuk ke warga");
       res.status(502).json({ error: "send_failed" });
     }
   });

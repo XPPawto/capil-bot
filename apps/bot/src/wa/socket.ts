@@ -9,9 +9,8 @@ import QRCode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
 import { config } from "../config";
 import { logger } from "../logger";
-import { handleIncomingMessages, handleMessageStatusUpdates, handleServiceHistorySync } from "../conversation/messageHandler";
+import { handleIncomingMessages } from "../conversation/messageHandler";
 import { handleIncomingCalls } from "../conversation/callHandler";
-import { registerPresenceListener } from "./presenceTracker";
 import { getBackoffDelay, getDisconnectStatusCode, markBotConnected, markBotDisconnected } from "./connection";
 import { waState } from "./state";
 
@@ -51,11 +50,6 @@ export async function startSocket(mode: ConnectMode = { type: "qr" }): Promise<v
       auth: state,
       logger: logger.child({ module: "baileys" }) as any,
       printQRInTerminal: false,
-      // true - begitu nomor bot discan/di-pairing BARU, riwayat chat yang WhatsApp kirim
-      // ikut tercatat ke Pesan Masuk lewat messaging-history.set (lihat
-      // handleServiceHistorySync). Cuma berlaku untuk pairing baru - tidak retroaktif untuk
-      // sesi yang sudah tertaut.
-      syncFullHistory: true,
       browser: Browsers.ubuntu("Chrome"),
     });
 
@@ -118,31 +112,15 @@ export async function startSocket(mode: ConnectMode = { type: "qr" }): Promise<v
       }
     });
 
-    sock.ev.on("messaging-history.set", ({ messages, isLatest, progress }) => {
-      handleServiceHistorySync(sock, { messages })
-        .then(() => {
-          if (isLatest) logger.info("Sinkronisasi riwayat chat nomor bot selesai.");
-        })
-        .catch((err) => logger.error({ err, progress }, "Gagal memproses sinkronisasi riwayat nomor bot"));
-    });
-
     sock.ev.on("messages.upsert", (payload) => {
       handleIncomingMessages(sock, payload).catch((err) =>
         logger.error({ err }, "Gagal memproses pesan masuk")
       );
     });
 
-    sock.ev.on("messages.update", (updates) => {
-      handleMessageStatusUpdates(updates, "SERVICE").catch((err) =>
-        logger.error({ err }, "Gagal memproses status centang pesan")
-      );
-    });
-
     sock.ev.on("call", (events) => {
       handleIncomingCalls(sock, events).catch((err) => logger.error({ err }, "Gagal memproses panggilan masuk"));
     });
-
-    registerPresenceListener(sock, "SERVICE");
   } catch (err) {
     waState.isConnecting = false;
     throw err;

@@ -5,27 +5,17 @@ import { startExpiredConversationCleanup } from "./jobs/expireConversations";
 import { startPickupReminderJob } from "./jobs/remindPendingPickup";
 import { startAbandonedConversationReminder } from "./jobs/remindAbandonedConversations";
 import { warmRequirementsCache } from "./conversation/requirements";
-import { startTelegramCommandListener } from "./notify/telegramCommands";
 import { startSocket } from "./wa/socket";
 import { markBotDisconnected } from "./wa/connection";
-import { markAllExtraAccountsDisconnected, startAllExtraAccountSockets } from "./wa/extraAccountManager";
 
 async function main(): Promise<void> {
   startControlServer();
-  startTelegramCommandListener();
   startReconciler();
   startExpiredConversationCleanup();
   startPickupReminderJob();
   startAbandonedConversationReminder();
   warmRequirementsCache().catch((err) => logger.warn({ err }, "Gagal warm-up cache syarat, akan diisi lazy per-request"));
   await startSocket({ type: "qr" });
-  // Akun-akun ekstra (bukan bot) - yang sudah pernah ditautkan sebelumnya otomatis
-  // menyambung ulang pakai kredensial tersimpan. Yang belum pernah (baru dibuat, belum
-  // discan QR-nya) tetap idle sampai admin membuka tab-nya di /admin-xpawto - lihat
-  // wa/extraAccountManager.ts.
-  await startAllExtraAccountSockets().catch((err: unknown) =>
-    logger.error({ err }, "Gagal menyambungkan ulang akun-akun ekstra")
-  );
   logger.info("Bot kelurahan siap. Jika belum tertaut, scan QR yang muncul di terminal atau lewat dashboard /bot.");
 }
 
@@ -42,7 +32,6 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Menerima sinyal shutdown, menandai bot terputus...");
   try {
     await markBotDisconnected();
-    await markAllExtraAccountsDisconnected();
   } catch (err) {
     logger.error({ err }, "Gagal menandai bot terputus saat shutdown");
   } finally {

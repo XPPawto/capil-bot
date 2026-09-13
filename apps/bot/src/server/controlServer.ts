@@ -8,20 +8,9 @@ import { sendReadyForPickupMessage } from "../notify/sendReadyForPickup";
 import { sendCustomMessage } from "../notify/sendCustomMessage";
 import { sendTakeoverNotice } from "../notify/sendTakeoverNotice";
 import { sendFileToResident } from "../notify/sendFileToResident";
-import { sendInboxReply } from "../notify/sendInboxReply";
-import { sendInboxFile } from "../notify/sendInboxFile";
-import { sendInboxReaction } from "../notify/sendInboxReaction";
-import { fetchAndCacheAvatar } from "../media/avatarFetch";
-import { getPresence, subscribePresenceOnce } from "../wa/presenceTracker";
 import { runBroadcast } from "../notify/broadcast";
 import { getSocket, logoutSocket, startSocket } from "../wa/socket";
 import { waState } from "../wa/state";
-import {
-  getExtraAccountRuntimeStatus,
-  getExtraAccountSocket,
-  logoutExtraAccountSocket,
-  startExtraAccountSocket,
-} from "../wa/extraAccountManager";
 
 /**
  * HTTP kecil yang HANYA bind ke 127.0.0.1 dan dilindungi shared-secret header.
@@ -40,8 +29,7 @@ export function startControlServer(): void {
   app.use(
     express.json({
       // 24mb: cukup untuk file base64 (berkas 16MB -> ~21.4MB base64) + overhead JSON,
-      // dipakai endpoint /notify/send-file & /notify/inbox-file untuk berkas yang dikirim
-      // admin ke warga (termasuk video/voice note lewat /admin-xpawto).
+      // dipakai endpoint /notify/send-file untuk berkas yang dikirim admin ke warga.
       limit: "24mb",
       verify: (req, _res, buf) => {
         (req as RequestWithRawBody).rawBody = buf.toString("utf8");
@@ -109,101 +97,6 @@ export function startControlServer(): void {
     res.json({ ok: true });
   });
 
-  // ---- Akun ekstra (perangkat tertaut manual, bukan bot) - dipakai halaman /admin-xpawto ----
-  // Bisa lebih dari satu (Akun Kedua, Akun Ketiga, dst), masing-masing dikunci oleh id-nya.
-
-  app.get("/extra-accounts", async (_req, res) => {
-    const accounts = await prisma.extraAccount.findMany({ orderBy: { id: "asc" } });
-    res.json({
-      accounts: accounts.map((a) => ({
-        id: a.id,
-        label: a.label,
-        phoneNumber: a.phoneNumber,
-        lastConnectedAt: a.lastConnectedAt,
-        ...getExtraAccountRuntimeStatus(a.id),
-      })),
-    });
-  });
-
-  app.post("/extra-accounts", async (req, res) => {
-    const label = String(req.body?.label ?? "").trim();
-    if (!label) {
-      res.status(400).json({ error: "missing_label" });
-      return;
-    }
-    const account = await prisma.extraAccount.create({ data: { label } });
-    res.json({ id: account.id, label: account.label });
-  });
-
-  app.get("/extra-accounts/:id/status", async (req, res) => {
-    const id = Number(req.params.id);
-    const account = await prisma.extraAccount.findUnique({ where: { id } });
-    if (!account) {
-      res.status(404).json({ error: "not_found" });
-      return;
-    }
-    res.json({
-      waJid: account.waJid,
-      phoneNumber: account.phoneNumber,
-      lastConnectedAt: account.lastConnectedAt,
-      // connected/isConnecting/qrDataUrl/pairingCode dari runtime in-memory (live), bukan
-      // kolom DB yang bisa basi sesaat setelah proses restart sebelum reconnect selesai.
-      ...getExtraAccountRuntimeStatus(id),
-    });
-  });
-
-  app.post("/extra-accounts/:id/connect-qr", async (req, res) => {
-    const id = Number(req.params.id);
-    const account = await prisma.extraAccount.findUnique({ where: { id } });
-    if (!account) {
-      res.status(404).json({ error: "not_found" });
-      return;
-    }
-    if (account.connected) {
-      res.status(409).json({ error: "already_connected" });
-      return;
-    }
-    startExtraAccountSocket(id, { type: "qr" }).catch((err) =>
-      logger.error({ err, accountId: id }, "Gagal memulai koneksi akun ekstra via QR")
-    );
-    res.json({ ok: true });
-  });
-
-  app.post("/extra-accounts/:id/connect-pairing", async (req, res) => {
-    const id = Number(req.params.id);
-    const account = await prisma.extraAccount.findUnique({ where: { id } });
-    if (!account) {
-      res.status(404).json({ error: "not_found" });
-      return;
-    }
-    if (account.connected) {
-      res.status(409).json({ error: "already_connected" });
-      return;
-    }
-    const phoneNumber = String(req.body?.phoneNumber ?? "").replace(/\D/g, "");
-    if (!phoneNumber || phoneNumber.length < 8) {
-      res.status(400).json({ error: "invalid_phone_number" });
-      return;
-    }
-    startExtraAccountSocket(id, { type: "pairing", phoneNumber }).catch((err) =>
-      logger.error({ err, accountId: id }, "Gagal memulai koneksi akun ekstra via kode pairing")
-    );
-    res.json({ ok: true });
-  });
-
-  app.post("/extra-accounts/:id/logout", async (req, res) => {
-    const id = Number(req.params.id);
-    await logoutExtraAccountSocket(id);
-    res.json({ ok: true });
-  });
-
-  app.delete("/extra-accounts/:id", async (req, res) => {
-    const id = Number(req.params.id);
-    await logoutExtraAccountSocket(id).catch(() => undefined);
-    await prisma.extraAccount.delete({ where: { id } }).catch(() => undefined);
-    res.json({ ok: true });
-  });
-
   app.post("/notify/status-change", async (req, res) => {
     const requestId = String(req.body?.requestId ?? "");
     if (!requestId) {
@@ -266,69 +159,6 @@ export function startControlServer(): void {
     }
   });
 
-  app.post("/notify/inbox-reply", async (req, res) => {
-    const waJid = String(req.body?.waJid ?? "");
-    const message = String(req.body?.message ?? "");
-    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
-    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
-    const quotedWaMessageId = req.body?.quotedWaMessageId ? String(req.body.quotedWaMessageId) : undefined;
-    const quoted = quotedWaMessageId
-      ? { waMessageId: quotedWaMessageId, fromMe: Boolean(req.body?.quotedFromMe), text: String(req.body?.quotedText ?? "") }
-      : undefined;
-    if (!waJid || !message.trim()) {
-      res.status(400).json({ error: "missing_fields" });
-      return;
-    }
-    try {
-      const waMessageId = await sendInboxReply(waJid, message, channel, extraAccountId, quoted);
-      res.json({ ok: true, waMessageId: waMessageId ?? null });
-    } catch (err) {
-      logger.error({ err, waJid }, "Gagal mengirim balasan kotak masuk ke warga");
-      res.status(502).json({ error: "send_failed" });
-    }
-  });
-
-  app.post("/notify/inbox-reaction", async (req, res) => {
-    const waJid = String(req.body?.waJid ?? "");
-    const waMessageId = String(req.body?.waMessageId ?? "");
-    const fromMe = Boolean(req.body?.fromMe);
-    const participant = req.body?.participant ? String(req.body.participant) : undefined;
-    const emoji = typeof req.body?.emoji === "string" ? req.body.emoji : "";
-    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
-    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
-    if (!waJid || !waMessageId) {
-      res.status(400).json({ error: "missing_fields" });
-      return;
-    }
-    try {
-      await sendInboxReaction(waJid, { remoteJid: waJid, id: waMessageId, fromMe, participant }, emoji, channel, extraAccountId);
-      res.json({ ok: true });
-    } catch (err) {
-      logger.error({ err, waJid }, "Gagal mengirim reaksi kotak masuk ke warga");
-      res.status(502).json({ error: "send_failed" });
-    }
-  });
-
-  app.post("/notify/inbox-file", async (req, res) => {
-    const waJid = String(req.body?.waJid ?? "");
-    const fileName = String(req.body?.fileName ?? "berkas");
-    const mimeType = String(req.body?.mimeType ?? "application/octet-stream");
-    const fileBase64 = String(req.body?.fileBase64 ?? "");
-    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
-    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
-    if (!waJid || !fileBase64) {
-      res.status(400).json({ error: "missing_fields" });
-      return;
-    }
-    try {
-      const waMessageId = await sendInboxFile(waJid, fileName, mimeType, fileBase64, channel, extraAccountId);
-      res.json({ ok: true, waMessageId: waMessageId ?? null });
-    } catch (err) {
-      logger.error({ err, waJid, fileName }, "Gagal mengirim file lewat Pesan Masuk");
-      res.status(502).json({ error: "send_failed" });
-    }
-  });
-
   app.post("/notify/send-file", async (req, res) => {
     const requestId = String(req.body?.requestId ?? "");
     const fileName = String(req.body?.fileName ?? "dokumen");
@@ -345,44 +175,6 @@ export function startControlServer(): void {
       logger.error({ err, requestId, fileName }, "Gagal mengirim file dokumen ke warga");
       res.status(502).json({ error: "send_failed" });
     }
-  });
-
-  app.post("/avatar", async (req, res) => {
-    const waJid = String(req.body?.waJid ?? "");
-    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
-    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
-    if (!waJid) {
-      res.status(400).json({ error: "missing_wajid" });
-      return;
-    }
-    try {
-      const result = await fetchAndCacheAvatar(channel, extraAccountId, waJid);
-      res.json(result);
-    } catch (err) {
-      logger.warn({ err, waJid, channel, extraAccountId }, "Gagal mengambil foto profil");
-      res.status(502).json({ error: "fetch_failed" });
-    }
-  });
-
-  app.post("/presence", async (req, res) => {
-    const waJid = String(req.body?.waJid ?? "");
-    const channel = req.body?.channel === "EXTRA" ? "EXTRA" : "SERVICE";
-    const extraAccountId = req.body?.extraAccountId ? Number(req.body.extraAccountId) : undefined;
-    if (!waJid) {
-      res.status(400).json({ error: "missing_wajid" });
-      return;
-    }
-    const sock = channel === "EXTRA" && extraAccountId ? getExtraAccountSocket(extraAccountId) : getSocket();
-    if (!sock) {
-      res.json({ status: null, lastSeen: null });
-      return;
-    }
-    // Best-effort, tidak ditunggu (await) - biar respons presence yang SUDAH ada di cache
-    // tetap langsung balik cepat, bukan ikut nunggu subscribe (sekali per jid, lihat
-    // subscribePresenceOnce) yang baru terasa hasilnya di panggilan-panggilan berikutnya.
-    subscribePresenceOnce(sock, channel, extraAccountId, waJid).catch(() => undefined);
-    const presence = getPresence(channel, extraAccountId, waJid);
-    res.json(presence ?? { status: null, lastSeen: null });
   });
 
   app.post("/broadcast", (req, res) => {

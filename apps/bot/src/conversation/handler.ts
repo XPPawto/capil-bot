@@ -14,7 +14,7 @@ import {
   requirementsStatusListText,
 } from "./requirements";
 import { intakeDocument } from "./documentIntake";
-import { logInboundIfActiveRequest } from "./messageLog";
+import { logInboundIfActiveRequest } from "./humanTakeover";
 import { fixIntroText, loadFixRejectedContext } from "./fixRejected";
 import { expirePendingRating, findPendingRating, submitRating } from "./rating";
 import { selfCancelRequest } from "./selfCancel";
